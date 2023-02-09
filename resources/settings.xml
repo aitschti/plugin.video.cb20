@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8" standalone="yes"?>
+<settings>
+    <category label="Favourites">
+        <setting id="fav_path_backup" type="folder" source="files" option="writeable" default="" label="Backup/Restore path (file manager sources)"/>
+        <setting id="fav_backup" type="action" label="Backup favourites" enable="true" option="close" action="RunPlugin(plugin://plugin.video.cb19/?tool=fav-backup)" />
+        <setting id="fav_restore" type="action" label="Restore favourites" enable="true" option="close" action="RunPlugin(plugin://plugin.video.cb19/?tool=fav-restore)" />        
+    </category>
+    <category label="Thumbnails">
+        <setting id="del_thumbs_on_startup" type="bool" default="false" label="Delete thumbnails every time you open a list"/>
+    </category>
+</settings>
