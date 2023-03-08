@@ -66,8 +66,8 @@ PAT_ACTOR_TOPIC = rb'og:description" content="(.*?)" />'
 PAT_ACTOR_THUMB = rb'og:image\" content=\"(.*)\?[0-9]'
 #PAT_ACTOR_LIST = rb'<li class=\"room_list_room\"[\s\S]*?<a href=\"\/(.*?)\/\"[\s\S]*?<img src=\"(.*?)\S\d{10}\"'
 #PAT_ACTOR_LIST2 = rb'<li class=\"room_list_room\"[\s\S]*?<a href=\"\/(.*?)\/\"[\s\S]*?<img src=\"(.*?)\S\d{10}\"[\s\S]*?<li title=\"(.*?)">[\s\S]*?\"cams\">(.*)<'
-PAT_ACTOR_LIST3 = rb'<li class=\"room_list_room\"[\s\S]*?data-room=\"(.*?)\"[\s\S]*?<img src=\"(.*?)\d{10}\"[\s\S]*?\">(.*)<\/[\s\S]*?class=\"age[\s\S]*?\">(.*)<\/span[\s\S]*?<li title=\"(.*?)\">[\s\S]*?class=\"location[\s\S]*?\">(.*)<\/li>[\s\S]*?\"cams\">[\s\S]*?<span[\s\S]*?>(.*)<\/span><span[\s\S]*?<span[\s\S]*?>(.*)<\/span>[\s\S]*?<\/li>'
-PAT_ACTOR_LIST_TAGS = rb'<li class=\"room_list_room\"[\s\S]*?data-room=\"(.*?)\"[\s\S]*?<img src=\"(.*?)\d{10}\"[\s\S]*?\">(.*)<\/[\s\S]*?class=\"age[\s\S]*?\">(.*)<\/span[\s\S]*?<li title=\"(.*?)\">[\s\S]*?class=\"location[\s\S]*?\">(.*)<\/li>[\s\S]*?\"cams\">[\s\S]*?<span[\s\S]*?>(.*)<\/span><span[\s\S]*?<span[\s\S]*?>(.*)<\/span>[\s\S]*?<\/li>'
+PAT_ACTOR_LIST3 = rb'<li class=\"room_list_room[\s\S]*?data-room=\"(.*?)\"[\s\S]*?<img src=\"(.*?)\?\d{10}\"[\s\S]*?\">(.*)<\/[\s\S]*?class=\"age[\s\S]*?\">(.*)<\/span[\s\S]*?<li title=\"(.*?)\">[\s\S]*?class=\"location[\s\S]*?\">(.*)<\/li>[\s\S]*?\"cams\">[\s\S]*?<span[\s\S]*?>(.*)<\/span><span[\s\S]*?<span[\s\S]*?>(.*)<\/span>[\s\S]*?<\/li>'
+PAT_ACTOR_LIST_TAGS = rb'<li class=\"room_list_room[\s\S]*?data-room=\"(.*?)\"[\s\S]*?<img src=\"(.*?)\?\d{10}\"[\s\S]*?\">(.*)<\/[\s\S]*?class=\"age[\s\S]*?\">(.*)<\/span[\s\S]*?<li title=\"(.*?)\">[\s\S]*?class=\"location[\s\S]*?\">(.*)<\/li>[\s\S]*?\"cams\">[\s\S]*?<span[\s\S]*?>(.*)<\/span><span[\s\S]*?<span[\s\S]*?>(.*)<\/span>[\s\S]*?<\/li>'
 PAT_ACTOR_BIO = rb'<div class="attribute">\n[\s\S]*?<div class="label">(.*?)<[\s\S]*?data">(.*?)<'
 PAT_LAST_BROADCAST = rb'<div class=\"attribute\">[\s\S]*?<div class=\"label\">Last Broadcast:<[\s\S]*?data\">(.*?)<'
 PAT_TAG_LIST = rb'<div class=\"tag_row\"[\s\S]*?href=\"(.*?)\" title=\"(.*?)\"[\s\S]*?\"viewers\">(.*?)<[\s\S]*?\"rooms\">(.*?)<'
@@ -207,13 +207,12 @@ def evaluate_request():
         elif "tag=" in param:
             get_cams_by_tag()
         elif "playactor=" in param:
-            play_actor(re.findall(r'\?playactor=(.*)', param)[0])
+            play_actor(re.findall(r'\?playactor=(.*)', param)[0], ["Livecam"])
     else:
         get_menu("main")
 
 def get_menu(param):
     """Decision tree. Shows main menu by default"""
-    
     itemlist = SITE_MENU
     if param == "categories":
         itemlist = SITE_CATEGORIES
@@ -235,7 +234,8 @@ def get_menu(param):
     for item in itemlist:
         url = sys.argv[0] + '?' + item[1]
         li = xbmcgui.ListItem(item[0])
-        li.setInfo('video', {'plot': item[2]})
+        tag = li.getVideoInfoTag()
+        tag.setPlot(item[2])
         items.append((url, li, True))
 
     xbmcplugin.addDirectoryItems(PLUGIN_ID, items)
@@ -368,25 +368,29 @@ def get_cams_by_category():
     items = []
     id = 0
     for item in cams:
+        #xbmc.log("Item: " + str(item), 1)
         url = sys.argv[0] + '?playactor=' + item[0].decode("utf-8")
         li = xbmcgui.ListItem(item[0].decode("utf-8"))
-
+        tag = li.getVideoInfoTag()
         # Extract viewers count for playcounter
         s = item[7].decode("utf-8")
         s = s.split(" ")[-2]
-
+        #xbmc.log("Viewers: '" + str(s)+"'", 1)
         li.setLabel(item[0].decode("utf-8"))
         li.setArt({'icon': item[1].decode("utf-8")})
-        li.setInfo('video', {'sorttitle': str(id).zfill(2) + " - " + item[0].decode("utf-8")})
+        tag.setSortTitle(str(id).zfill(2) + " - " + item[0].decode("utf-8"))
+        #xbmc.log("SortTitle: " + str(id).zfill(2) + " - " + item[0].decode("utf-8"), 1)
         id = id + 1
-        li.setInfo('video', {
-                   'plot': "Stats: " 
+        tag.setPlot("Stats: " 
                            + item[6].decode("utf-8") + ", " + item[7].decode("utf-8")
                            + "\nAge: " + item[3].decode("utf-8").replace("&nbsp;","-") 
                            + "\nLabel: " + item[2].decode("utf-8") 
                            + "\nLocation: " + item[5].decode("utf-8") 
-                           + "\n\n"+item[4].decode("utf-8")})
+                           + "\n\n"+item[4].decode("utf-8"))
+        #xbmc.log("PlayCount: " + str(s), 1)
+        #tag.setPlaycount(int(s)) #Not working probperly at the moment
         li.setInfo('video', {'count': s})
+        
 
         # Context menu
         commands = []
@@ -409,8 +413,10 @@ def get_cams_by_category():
 
         # Next page button as listitem
         li = xbmcgui.ListItem("Next page (%s of %s)" % (str(page + 1),str(last_page)))
+        tag = li.getVideoInfoTag()
         li.setArt({'icon': 'DefaultFolder.png'})
-        li.setInfo('video', {'sorttitle': str(id).zfill(2) + " - Next Page"})
+        tag.setSortTitle(str(id).zfill(2) + " - Next Page")
+        #tag.setPlaycount(-1)
         li.setInfo('video', {'count': str(-1)})
 
         # Context menu
@@ -447,13 +453,15 @@ def get_cams_by_tag():
     
     # Regex for available rooms
     cams = re.findall(PAT_ACTOR_LIST_TAGS, data)
-
+    
     # Build kodi list items for virtual directory
     items = []
+    
     id = 0
     for item in cams:
         url = sys.argv[0] + '?playactor=' + item[0].decode("utf-8")
         li = xbmcgui.ListItem(item[0].decode("utf-8"))
+        tag = li.getVideoInfoTag()
 
         # Extract viewers count for playcounter
         s = item[7].decode("utf-8")
@@ -461,15 +469,15 @@ def get_cams_by_tag():
         
         li.setLabel(item[0].decode("utf-8"))
         li.setArt({'icon': item[1].decode("utf-8")})
-        li.setInfo('video', {'sorttitle': str(id).zfill(2) + " - " + item[0].decode("utf-8")})
+        tag.setSortTitle(str(id).zfill(2) + " - " + item[0].decode("utf-8"))
         id = id + 1
-        li.setInfo('video', {
-                   'plot': "Stats: "
+        tag.setPlot("Stats: "
                            + item[6].decode("utf-8") + ", " + item[7].decode("utf-8")
                            + "\nAge: " + item[3].decode("utf-8").replace("&nbsp;","-") 
                            + "\nLabel: " + item[2].decode("utf-8") 
                            + "\nLocation: " + item[5].decode("utf-8") 
-                           + "\n\n"+item[4].decode("utf-8")})
+                           + "\n\n"+item[4].decode("utf-8"))
+        #tag.setPlaycount(int(s)) #Not working probperly at the moment
         li.setInfo('video', {'count': s})
 
         # Context menu
@@ -493,9 +501,11 @@ def get_cams_by_tag():
 
         # Next page button as listitem
         li = xbmcgui.ListItem("Next page (%s of %s)" % (str(page + 1),str(last_page)))
-        li.setArt({'icon': 'DefaultFolder.png'})
-        li.setInfo('video', {'sorttitle': str(id).zfill(2) + " - Next Page"})
+        tag = li.getVideoInfoTag()
+        tag.setSortTitle(str(id).zfill(2) + " - Next Page")
+        #tag.setPlaycount(-1)
         li.setInfo('video', {'count': str(-1)})
+        li.setArt({'icon': 'DefaultFolder.png'})
 
         # TODO: Context menu
         commands = []
@@ -540,11 +550,12 @@ def get_tag_list():
             item[1].decode("utf-8") + "&page=1" + \
             "&url=" + item[0].decode("utf-8")
         li = xbmcgui.ListItem(item[1].decode("utf-8"))
+        tag = li.getVideoInfoTag()
         li.setLabel(item[1].decode("utf-8") + " (%s)" %
                     item[3].decode("utf-8"))
+        #tag.setPlaycount(int(item[3].decode("utf-8")))
         li.setInfo('video', {'count': item[3].decode("utf-8")})
-        li.setInfo('video', {'sorttitle': str(id).zfill(
-            3) + " - " + item[1].decode("utf-8")})
+        tag.setSortTitle(str(id).zfill(3) + " - " + item[1].decode("utf-8"))
         items.append((url, li, True))
         id = id + 1
 
@@ -590,7 +601,7 @@ def get_bio_context_from_json(b):
     # body_type (Body Type:)
     if "body_type" in b and not b['body_type'] == "":
         s += " | Body type: " + b['body_type']
-    # languages (Language(s):) simple string
+    # languages (Language(s):) simple stringgenre
     if "languages" in b and not b['languages'] == "":
         s += " | Languages: " + b['languages']
     # time_since_last_broadcast (Last Broadcast:)
@@ -613,7 +624,7 @@ def get_actor_prices_from_json(v):
         return ""
 
 
-def play_actor(actor, genre=""):
+def play_actor(actor, genre=[""]):
     """Get playlist for actor/username and add m3u8 to kodi's playlist"""
     
     # Try to play actor
@@ -653,8 +664,9 @@ def play_actor(actor, genre=""):
     
         # Build kodi listem for playlist
         li = xbmcgui.ListItem(actor)
-        li.setInfo('video', {'Genre': genre, 'plot': plot})
-        
+        tag = li.getVideoInfoTag()
+        tag.setGenres(genre)
+        tag.setPlot(plot)
         # Thumbnail for OSD (Square)
         li.setArt({'icon': THUMB_SQUARE.format(actor)})
         li.setMimeType('application/vnd.apple.mpegstream_url')
@@ -725,7 +737,8 @@ def search_actor():
             commands = []
             commands.append((ADDON_SHORTNAME + ' - Add user to favourites','RunScript(' + ADDON_NAME + ', ' + str(sys.argv[1]) + ', add_favourite, ' + s + ')'))
             li.addContextMenuItems(commands, True)
-
+            tag = li.getVideoInfoTag()
+            
             if status=="public":
                 li.setLabel(s)
             else:
@@ -740,7 +753,7 @@ def search_actor():
             plot = topic + "\n\nViewers: " + str(viewers) + get_bio_context_from_json(b) + get_actor_prices_from_json(v)
             
             # List item info and art
-            li.setInfo('video', {'plot': plot})
+            tag.setPlot(plot)
             li.setArt({'icon': THUMB_SQUARE.format(s)})
 
             # Put items to virtual directory listing
@@ -777,23 +790,23 @@ def search_actor2():
     for item in cams:
         url = sys.argv[0] + '?playactor=' + item[0].decode("utf-8")
         li = xbmcgui.ListItem(item[0].decode("utf-8"))
-
+        tag = li.getVideoInfoTag()
+        
         # Extract viewers count
         s = item[6].decode("utf-8")
         s = s.split(" ")[-2]
 
         li.setLabel(item[0].decode("utf-8"))
         li.setArt({'icon': item[1].decode("utf-8")})
-        li.setInfo('video', {'sorttitle': str(id).zfill(2) + " - " + item[0].decode("utf-8")})
+        tag.setSortTitle(str(id).zfill(2) + " - " + item[0].decode("utf-8"))
         id = id + 1
-        li.setInfo('video', {
-                   'plot': "Stats: " 
+        tag.setPlot("Stats: " 
                            + item[6].decode("utf-8")
                            + "\nAge: " + item[3].decode("utf-8").replace("&nbsp;","-") 
                            + "\nLabel: " + item[2].decode("utf-8") 
                            + "\nLocation: " + item[5].decode("utf-8") 
-                           + "\n\n"+item[4].decode("utf-8")})
-        li.setInfo('video', {'count': s})
+                           + "\n\n"+item[4].decode("utf-8"))
+        tag.setPlaycount(s)
 
         # Context menu
         commands = []
