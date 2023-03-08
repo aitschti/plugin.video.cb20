@@ -1,6 +1,6 @@
 # Kodi Media Center language file
-# Addon Name: CB19
-# Addon id: plugin.video.cb19
+# Addon Name: CB20
+# Addon id: plugin.video.cb20
 # Addon Provider: aitschti
 msgid ""
 msgstr ""

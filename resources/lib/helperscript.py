@@ -7,7 +7,7 @@ import xbmcgui
 import xbmcaddon
 import xbmcplugin
 
-ADDON_NAME = "plugin.video.cb19"
+ADDON_NAME = "plugin.video.cb20"
 DB_FAVOURITES_FILE = "favourites-cb.db"
 DB_FAVOURITES = xbmcvfs.translatePath("special://profile/addon_data/%s/%s" % (ADDON_NAME, DB_FAVOURITES_FILE))
 DB_TEXTURES = xbmcvfs.translatePath("special://userdata/Database/Textures13.db")
@@ -49,7 +49,7 @@ def refresh_container():
             xbmc.log(ADDON_NAME + ": Cleaned up thumnails!", 1)
     except:
         pass
-    #xbmc.executebuiltin("Container.Update('plugin://plugin.video.cb19?main')")
+    #xbmc.executebuiltin("Container.Update('plugin://plugin.video.cb20?main')")
     #xbmc.executebuiltin("Container.Refresh") 
     #xbmcplugin.endOfDirectory(int(sys.argv[1]), cacheToDisc=False)
     #xbmc.executebuiltin("Container.Refresh")

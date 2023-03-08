@@ -13,8 +13,8 @@ import urllib.parse
 import urllib.error
 
 # Config constants
-ADDON_NAME = "plugin.video.cb19"
-ADDON_SHORTNAME = "CB19"
+ADDON_NAME = "plugin.video.cb20"
+ADDON_SHORTNAME = "CB20"
 BASE_DIR = os.path.dirname(__file__)
 DB_FAVOURITES_FILE = "favourites-cb.db"
 DB_FAVOURITES = xbmcvfs.translatePath("special://profile/addon_data/%s/%s" % (ADDON_NAME, DB_FAVOURITES_FILE))
