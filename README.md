@@ -15,6 +15,7 @@ Tested on Android (Fire TV) and Windows, should work fine with other Linux syste
 
 - Tested with Estuary skin only
 - "Info wall" is the recommended view for listings as you get a little more details about the cam
+- Check setting for thumbnails to "Delete thumbnails every time you open a list". This will send a lot more requests to the site, but you will get newest preview images. Otherwise Kodi will serve cached versions abd therefore possibly outdated images, if you do not clean caches otherwise. Default off to minimize requests.
 
 ## Todo
 
