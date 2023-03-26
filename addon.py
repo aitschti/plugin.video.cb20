@@ -58,6 +58,7 @@ USER_STATES_NICE = {
     'offline' : 'Offline'
 }
 DEL_THUMBS_ON_STARTUP = ADDON.getSettingBool('del_thumbs_on_startup')
+REQUEST_TIMEOUT = ADDON.getSettingInt('request_timeout')
 
 # Pattern matchings for HTML scraping
 PAT_PLAYLIST = rb"(http.*?://.*?.stream.highwebmedia.com.*?m3u8)"
@@ -692,7 +693,7 @@ def get_site_page(page):
     req.add_header('Origin', SITE_ORIGIN)
     req.add_header('User-Agent', USER_AGENT)
     
-    return urllib.request.urlopen(req).read()
+    return urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT).read()
 
 def get_site_page_full(page):
     """Fetch HTML data from site"""
@@ -702,7 +703,7 @@ def get_site_page_full(page):
     req.add_header('Origin', SITE_ORIGIN)
     req.add_header('User-Agent', USER_AGENT)
     
-    return urllib.request.urlopen(req).read()
+    return urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT).read()
 
 def search_actor():
     """Search for actor/username and list item if username exists"""
