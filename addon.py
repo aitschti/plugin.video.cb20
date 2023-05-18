@@ -38,6 +38,7 @@ THUMB_SQUARE = "https://roomimg.stream.highwebmedia.com/ri/{0}.jpg"
 THUMB_HIRES = "https://cbjpeg.stream.highwebmedia.com/stream?room={0}"
 API_ENDPOINT_BIO = "https://chaturbate.com/api/biocontext/{0}/"
 API_ENDPOINT_VIDEO = "https://chaturbate.com/api/chatvideocontext/{0}/"
+API_ENDPOINT_TAGLIST = "https://chaturbate.com/api/ts/hashtags/tag-table-data/?g={0}&page={1}&limit={2}&sort={3}"
 
 # User agent(s)
 USER_AGENT = " Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/88.0.4324.182 Safari/537.36"
@@ -59,6 +60,10 @@ USER_STATES_NICE = {
 }
 DEL_THUMBS_ON_STARTUP = ADDON.getSettingBool('del_thumbs_on_startup')
 REQUEST_TIMEOUT = ADDON.getSettingInt('request_timeout')
+TAG_SORT_BY_OPTIONS = ["ht", "-rc", "-vc"]
+TAG_SORT_BY_STD = TAG_SORT_BY_OPTIONS[ADDON.getSettingInt('tag_sort_by')]
+TAG_LIST_LIMITS = [10, 25, 50, 75, 100]
+TAG_LIST_LIMIT = TAG_LIST_LIMITS[ADDON.getSettingInt('tag_list_limit')]
 
 # Pattern matchings for HTML scraping
 PAT_PLAYLIST = rb"(http.*?://.*?.stream.highwebmedia.com.*?m3u8)"
@@ -71,7 +76,7 @@ PAT_ACTOR_LIST3 = rb'<li class=\"room_list_room[\s\S]*?data-room=\"(.*?)\"[\s\S]
 PAT_ACTOR_LIST_TAGS = rb'<li class=\"room_list_room[\s\S]*?data-room=\"(.*?)\"[\s\S]*?<img src=\"(.*?)\?\d{10}\"[\s\S]*?\">(.*)<\/[\s\S]*?class=\"age[\s\S]*?\">(.*)<\/span[\s\S]*?<li title=\"(.*?)\">[\s\S]*?class=\"location[\s\S]*?\">(.*)<\/li>[\s\S]*?\"cams\">[\s\S]*?<span[\s\S]*?>(.*)<\/span><span[\s\S]*?<span[\s\S]*?>(.*)<\/span>[\s\S]*?<\/li>'
 PAT_ACTOR_BIO = rb'<div class="attribute">\n[\s\S]*?<div class="label">(.*?)<[\s\S]*?data">(.*?)<'
 PAT_LAST_BROADCAST = rb'<div class=\"attribute\">[\s\S]*?<div class=\"label\">Last Broadcast:<[\s\S]*?data\">(.*?)<'
-PAT_TAG_LIST = rb'<div class=\"tag_row\"[\s\S]*?href=\"(.*?)\" title=\"(.*?)\"[\s\S]*?\"viewers\">(.*?)<[\s\S]*?\"rooms\">(.*?)<'
+#PAT_TAG_LIST = rb'<div class=\"tag_row\"[\s\S]*?href=\"(.*?)\" title=\"(.*?)\"[\s\S]*?\"viewers\">(.*?)<[\s\S]*?\"rooms\">(.*?)<'
 PAT_PAGINATION = rb'endless_page_link[\s\S]*?data-floating[\s\S]*?>([\d*][^a-z]?)<\/a'
 
 # Tuples for menu and categories on site
@@ -411,7 +416,7 @@ def get_cams_by_category():
 
         # URL for next page button
         nextpageurl = cat + "&" + "page=" + str(page+1)
-
+        xbmc.log("NEXT PAGE URL: " + str(nextpageurl),1)
         # Next page button as listitem
         li = xbmcgui.ListItem("Next page (%s of %s)" % (str(page + 1),str(last_page)))
         tag = li.getVideoInfoTag()
@@ -530,36 +535,94 @@ def put_virtual_directoy_listing(items):
 
 def get_tag_list():
     """Get list of available tag for the categories"""
+        
+    # Filter parameter
+    paras = sys.argv[2].replace("%2f", "/")
+    paras = paras.replace("?", "")
+    paras = paras.split("/")
+    
+    # Build API url
+    apiUrl = ""
+    
+    genre = re.findall(r'taglist-(.*)', paras[0])[0] # featured
+    genreFull = ""
+    
+    if genre == "featured":
+        genreFull = "/"
+        genre = "" # f,m,c,s (all eq empty strong)
+    elif genre == "f":
+        genreFull = "/female/"
+    elif genre == "m":
+        genreFull = "/male/"
+    elif genre == "c":
+        genreFull = "/couple/"
+    elif genre == "s":
+        genreFull = "/trans/"
+    
+    page = "1"
+    limit = str(TAG_LIST_LIMIT)
+    sortBy = TAG_SORT_BY_STD  # ht = hashtag | rc = room count | vc = viewer count. prefix "-" to reverse order
+    
+    if len(paras) == 4: # Subsequent calls from pagination links or context menu
+        # Default parameters
+        page = paras[1]
+        limit = paras[2]
+        sortBy = paras[3]
+    
+    apiUrl = API_ENDPOINT_TAGLIST.format(genre, page, limit, sortBy)
 
-    taglist = re.findall(r'taglist-(.*)', sys.argv[2].replace("?", ""))[0]
-
-    # Featured category is always an empty string on site, so handle it and grab URL
-    if taglist == "featured":
-        url = "tags/"
-    else:
-        url = "tags/"+taglist+"/"
-    data = get_site_page(url)
-
-    # Regex for available tags
-    tags = re.findall(PAT_TAG_LIST, data)
-
-    # Build kodi listems for virtual directory
+    # Get json data
+    v = get_site_page_full(apiUrl)
+    v = json.loads(v)
+    
     items = []
-    id = 0
-    for item in tags:
-        url = sys.argv[0] + '?tag=' + \
-            item[1].decode("utf-8") + "&page=1" + \
-            "&url=" + item[0].decode("utf-8")
-        li = xbmcgui.ListItem(item[1].decode("utf-8"))
-        tag = li.getVideoInfoTag()
-        li.setLabel(item[1].decode("utf-8") + " (%s)" %
-                    item[3].decode("utf-8"))
-        #tag.setPlaycount(int(item[3].decode("utf-8")))
-        li.setInfo('video', {'count': item[3].decode("utf-8")})
-        tag.setSortTitle(str(id).zfill(3) + " - " + item[1].decode("utf-8"))
-        items.append((url, li, True))
-        id = id + 1
-
+    
+    if "hashtags" in v: # no error, we have results
+        total = int(v["total"])
+        xbmc.log("Total tags in genre: " + str(total), 1)
+        
+        id = 0
+        for item in v["hashtags"]: # URL example: ?tag=tagname&page=1&url=/tag/tagname/genre/
+            url = sys.argv[0] + '?tag=' + \
+                item["hashtag"] + "&page=1" + \
+                "&url=/tag/" + item["hashtag"] + genreFull
+            li = xbmcgui.ListItem(item["hashtag"])
+            tag = li.getVideoInfoTag()
+            li.setLabel(item["hashtag"] + " (%s)" %
+                        item["room_count"])
+            # tag.setPlaycount(int(item["room_count"]))
+            li.setInfo('video', {'count': item["room_count"]})
+            tag.setSortTitle(str(id).zfill(3) + " - " + item["hashtag"])
+            items.append((url, li, True))
+            id = id + 1
+        
+        # Pagination
+        totalPages = total // int(limit)
+        
+        if totalPages > 1: # We have enough results for at least two pages
+            if int(page) + 1 < totalPages:
+                # URL for next page button
+                if genre == "":
+                    genre = "featured"
+                nextpageurl = "taglist-" + genre + "/" + str(int(page)+1) + "/" + limit + "/" + sortBy
+                #xbmc.log("NEXT PAGE URL: " + str(nextpageurl),1)
+                li = xbmcgui.ListItem("Next page (%s of %s)" % (str(int(page)+1),str(totalPages)))
+                tag = li.getVideoInfoTag()
+                li.setArt({'icon': 'DefaultFolder.png'})
+                tag.setSortTitle(str(id).zfill(2) + " - Next Page")
+                # tag.setPlaycount(-1)
+                li.setInfo('video', {'count': str(-1)})
+                
+                # Context menu
+                commands = []
+                firstpageurl = "taglist-" + genre + "/1/" + limit + "/" + sortBy
+                commands.append(('Back first page',"Container.Update(%s?%s, replace)" % ( sys.argv[0],  firstpageurl)))
+                commands.append(('Back main menu',"Container.Update(%s, replace)" % ( sys.argv[0])))
+                li.addContextMenuItems(commands, True)
+                
+                items.append((sys.argv[0] + '?'+nextpageurl, li, True))
+    
+    # Build kodi listems for virtual directory
     # Put items to virtual directory listing and set sortings
     xbmcplugin.addSortMethod(int(sys.argv[1]), xbmcplugin.SORT_METHOD_VIDEO_SORT_TITLE)
     xbmcplugin.addSortMethod(int(sys.argv[1]), xbmcplugin.SORT_METHOD_PROGRAM_COUNT)
@@ -688,6 +751,7 @@ def get_site_page(page):
     """Fetch HTML data from site"""
 
     url = "%s/%s" % (SITE_URL, page)
+    xbmc.log("URL: " + str(url),1)
     req = urllib.request.Request(url)
     req.add_header('Referer', SITE_REFFERER)
     req.add_header('Origin', SITE_ORIGIN)
@@ -697,7 +761,7 @@ def get_site_page(page):
 
 def get_site_page_full(page):
     """Fetch HTML data from site"""
-
+    xbmc.log("URL: " + str(page),1)
     req = urllib.request.Request(page)
     req.add_header('Referer', SITE_REFFERER)
     req.add_header('Origin', SITE_ORIGIN)
