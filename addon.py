@@ -57,22 +57,12 @@ USER_STATES = {
     'hidden' : 'hidden',
     'offline' : 'off'
 }
-CURRENT_SHOW = {
-    'public' : 'public',
-    'private' : 'private',
-    'hidden' : 'hidden',
-    'offline' : 'offline'
-}
 USER_STATES_NICE = {
     'public' : 'Public',
     'private' : 'Private Session',
     'hidden' : 'Hidden',
     'offline' : 'Offline'
 }
-GENRE_CAMS = ('std-cams', 'new-cams', 'gaming-cams', 'region-cams', 'age-cams')
-REGIONS = ('NA', 'O', 'ER', 'AS', 'SA')
-AGE_CAMS = {'18+' : {'18','20'}, '18-21' : {'18','22'}, '20-30' : {'20','31'}, '30-50' : {'30','51'}, '50+' : {'50','200'}}
-
     
 DEL_THUMBS_ON_STARTUP = ADDON.getSettingBool('del_thumbs_on_startup')
 REQUEST_TIMEOUT = ADDON.getSettingInt('request_timeout')
@@ -83,17 +73,6 @@ TAG_LIST_LIMIT = TAG_LIST_LIMITS[ADDON.getSettingInt('tag_list_limit')]
 
 CAM_LIST_LIMITS = [10, 25, 50, 75, 100]
 CAM_LIST_LIMIT = TAG_LIST_LIMITS[ADDON.getSettingInt('cam_list_limit')]
-
-# Pattern matchings for HTML scraping
-PAT_PLAYLIST = rb"(http.*?://.*?.stream.highwebmedia.com.*?m3u8)"
-PAT_PLAYLIST2 = rb"\"hls_source\": \"(http.*?://.*?.stream.highwebmedia.com.*?m3u8)"
-PAT_ACTOR_TOPIC = rb'og:description" content="(.*?)" />'
-PAT_ACTOR_THUMB = rb'og:image\" content=\"(.*)\?[0-9]'
-PAT_ACTOR_LIST_TAGS = rb'<li class=\"room_list_room[\s\S]*?data-room=\"(.*?)\"[\s\S]*?<img src=\"(.*?)\?\d{10}\"[\s\S]*?\">(.*)<\/[\s\S]*?class=\"age[\s\S]*?\">(.*)<\/span[\s\S]*?<li title=\"(.*?)\">[\s\S]*?class=\"location[\s\S]*?\">(.*)<\/li>[\s\S]*?\"cams\">[\s\S]*?<span[\s\S]*?>(.*)<\/span><span[\s\S]*?<span[\s\S]*?>(.*)<\/span>[\s\S]*?<\/li>'
-PAT_ACTOR_BIO = rb'<div class="attribute">\n[\s\S]*?<div class="label">(.*?)<[\s\S]*?data">(.*?)<'
-PAT_LAST_BROADCAST = rb'<div class=\"attribute\">[\s\S]*?<div class=\"label\">Last Broadcast:<[\s\S]*?data\">(.*?)<'
-#PAT_TAG_LIST = rb'<div class=\"tag_row\"[\s\S]*?href=\"(.*?)\" title=\"(.*?)\"[\s\S]*?\"viewers\">(.*?)<[\s\S]*?\"rooms\">(.*?)<'
-PAT_PAGINATION = rb'endless_page_link[\s\S]*?data-floating[\s\S]*?>([\d*][^a-z]?)<\/a'
 
 # Tuples for menu and categories on site
 SITE_MENU = (('Categories - All', "catlist", "Show cams by categories featured, female, male, couple, trans."), 
@@ -159,7 +138,7 @@ def evaluate_request():
         elif "taglist" in param:
             get_tag_list()
         elif "playactor=" in param:
-            play_actor(re.findall(r'\?playactor=(.*)', param)[0], ["Stripchat"])
+            play_actor(re.findall(r'\?playactor=(.*)', param)[0], ["Chaturbate"])
     else:
         get_menu()
 
