@@ -8,9 +8,12 @@ import xbmcplugin
 import xbmcvfs
 import sqlite3
 import re
+import html
+import math
 import urllib.request
 import urllib.parse
 import urllib.error
+from datetime import datetime, timezone
 
 # Config constants
 ADDON_NAME = "plugin.video.cb20"
@@ -29,21 +32,23 @@ Q_DEL_THUMBNAILS = "DELETE FROM texture WHERE url LIKE '%.highwebmedia.com%'"
 PLUGIN_ID = int(sys.argv[1])
 ADDON = xbmcaddon.Addon(id=ADDON_NAME)
 
-# URLs and headers for requests
-SITE_URL = "https://chaturbate.com"
-SITE_REFFERER = "https://chaturbate.com"
-SITE_ORIGIN = "https://chaturbate.com"
-THUMB_WIDE = "https://roomimg.stream.highwebmedia.com/riw/{0}.jpg"
-THUMB_SQUARE = "https://roomimg.stream.highwebmedia.com/ri/{0}.jpg"
-THUMB_HIRES = "https://cbjpeg.stream.highwebmedia.com/stream?room={0}"
-API_ENDPOINT_BIO = "https://chaturbate.com/api/biocontext/{0}/"
-API_ENDPOINT_VIDEO = "https://chaturbate.com/api/chatvideocontext/{0}/"
-API_ENDPOINT_TAGLIST = "https://chaturbate.com/api/ts/hashtags/tag-table-data/?g={0}&page={1}&limit={2}&sort={3}"
+# Thumbnail URL constants
+THUMB_WIDE    = "https://roomimg.stream.highwebmedia.com/riw/{0}.jpg"
+THUMB_SQUARE  = "https://roomimg.stream.highwebmedia.com/ri/{0}.jpg"
+THUMB_HIRES   = "https://cbjpeg.stream.highwebmedia.com/stream?room={0}"
 
-# User agent(s)
-USER_AGENT = " Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/88.0.4324.182 Safari/537.36"
-USER_AGENT2 = 'Mozilla/5.0 (iPad; CPU OS 8_1 like Mac OS X) AppleWebKit/600.1.4 (KHTML, like Gecko) Version/8.0 Mobile/12B410 Safari/600.1.4'
-USER_AGENT3 = 'User-Agent=Mozilla/5.0 (iPad; CPU OS 8_1 like Mac OS X) AppleWebKit/600.1.4 (KHTML, like Gecko) Version/8.0 Mobile/12B410 Safari/600.1.4'
+# Headers
+REQUEST_HEADERS = {
+    'Referer': 'https://chaturbate.com',
+    'Origin': 'https://chaturbate.com',
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:118.0) Gecko/20100101 Firefox/118.0'
+}
+
+# API endpoints
+API_ENDPOINT_BIO     = "https://chaturbate.com/api/biocontext/{0}/"
+API_ENDPOINT_VIDEO   = "https://chaturbate.com/api/chatvideocontext/{0}/"
+API_ENDPOINT_TAGLIST = "https://chaturbate.com/api/ts/hashtags/tag-table-data/?g={0}&page={1}&limit={2}&sort={3}"
+API_ENDPOINT_ROOMS   = "https://chaturbate.com/api/ts/roomlist/room-list/?enable_recommendations=false"
 
 # Site specific constants
 USER_STATES = {
@@ -52,12 +57,23 @@ USER_STATES = {
     'hidden' : 'hidden',
     'offline' : 'off'
 }
+CURRENT_SHOW = {
+    'public' : 'public',
+    'private' : 'private',
+    'hidden' : 'hidden',
+    'offline' : 'offline'
+}
 USER_STATES_NICE = {
     'public' : 'Public',
     'private' : 'Private Session',
     'hidden' : 'Hidden',
     'offline' : 'Offline'
 }
+GENRE_CAMS = ('std-cams', 'new-cams', 'gaming-cams', 'region-cams', 'age-cams')
+REGIONS = ('NA', 'O', 'ER', 'AS', 'SA')
+AGE_CAMS = {'18+' : {'18','20'}, '18-21' : {'18','22'}, '20-30' : {'20','31'}, '30-50' : {'30','51'}, '50+' : {'50','200'}}
+
+    
 DEL_THUMBS_ON_STARTUP = ADDON.getSettingBool('del_thumbs_on_startup')
 REQUEST_TIMEOUT = ADDON.getSettingInt('request_timeout')
 TAG_SORT_BY_OPTIONS = ["ht", "-rc", "-vc"]
@@ -65,14 +81,14 @@ TAG_SORT_BY_STD = TAG_SORT_BY_OPTIONS[ADDON.getSettingInt('tag_sort_by')]
 TAG_LIST_LIMITS = [10, 25, 50, 75, 100]
 TAG_LIST_LIMIT = TAG_LIST_LIMITS[ADDON.getSettingInt('tag_list_limit')]
 
+CAM_LIST_LIMITS = [10, 25, 50, 75, 100]
+CAM_LIST_LIMIT = TAG_LIST_LIMITS[ADDON.getSettingInt('cam_list_limit')]
+
 # Pattern matchings for HTML scraping
 PAT_PLAYLIST = rb"(http.*?://.*?.stream.highwebmedia.com.*?m3u8)"
 PAT_PLAYLIST2 = rb"\"hls_source\": \"(http.*?://.*?.stream.highwebmedia.com.*?m3u8)"
 PAT_ACTOR_TOPIC = rb'og:description" content="(.*?)" />'
 PAT_ACTOR_THUMB = rb'og:image\" content=\"(.*)\?[0-9]'
-#PAT_ACTOR_LIST = rb'<li class=\"room_list_room\"[\s\S]*?<a href=\"\/(.*?)\/\"[\s\S]*?<img src=\"(.*?)\S\d{10}\"'
-#PAT_ACTOR_LIST2 = rb'<li class=\"room_list_room\"[\s\S]*?<a href=\"\/(.*?)\/\"[\s\S]*?<img src=\"(.*?)\S\d{10}\"[\s\S]*?<li title=\"(.*?)">[\s\S]*?\"cams\">(.*)<'
-PAT_ACTOR_LIST3 = rb'<li class=\"room_list_room[\s\S]*?data-room=\"(.*?)\"[\s\S]*?<img src=\"(.*?)\?\d{10}\"[\s\S]*?\">(.*)<\/[\s\S]*?class=\"age[\s\S]*?\">(.*)<\/span[\s\S]*?<li title=\"(.*?)\">[\s\S]*?class=\"location[\s\S]*?\">(.*)<\/li>[\s\S]*?\"cams\">[\s\S]*?<span[\s\S]*?>(.*)<\/span><span[\s\S]*?<span[\s\S]*?>(.*)<\/span>[\s\S]*?<\/li>'
 PAT_ACTOR_LIST_TAGS = rb'<li class=\"room_list_room[\s\S]*?data-room=\"(.*?)\"[\s\S]*?<img src=\"(.*?)\?\d{10}\"[\s\S]*?\">(.*)<\/[\s\S]*?class=\"age[\s\S]*?\">(.*)<\/span[\s\S]*?<li title=\"(.*?)\">[\s\S]*?class=\"location[\s\S]*?\">(.*)<\/li>[\s\S]*?\"cams\">[\s\S]*?<span[\s\S]*?>(.*)<\/span><span[\s\S]*?<span[\s\S]*?>(.*)<\/span>[\s\S]*?<\/li>'
 PAT_ACTOR_BIO = rb'<div class="attribute">\n[\s\S]*?<div class="label">(.*?)<[\s\S]*?data">(.*?)<'
 PAT_LAST_BROADCAST = rb'<div class=\"attribute\">[\s\S]*?<div class=\"label\">Last Broadcast:<[\s\S]*?data\">(.*?)<'
@@ -80,82 +96,22 @@ PAT_LAST_BROADCAST = rb'<div class=\"attribute\">[\s\S]*?<div class=\"label\">La
 PAT_PAGINATION = rb'endless_page_link[\s\S]*?data-floating[\s\S]*?>([\d*][^a-z]?)<\/a'
 
 # Tuples for menu and categories on site
-SITE_MENU = (('Categories - All', "categories", "Show cams by categories featured, female, male, couple, trans."), 
-             ('Categories - Female', "cats-f", "Show female cams only."), 
-             ('Categories - Male', "cats-m", "Show male cams only."), 
-             ('Categories - Couple', "cats-c", "Show couple cams only."), 
-             ('Categories - Trans', "cats-t", "Show trans cams only."), 
+SITE_MENU = (('Categories - All', "catlist", "Show cams by categories featured, female, male, couple, trans."), 
+             ('Categories - Female', "catlist&genders=f", "Show female cams only."), 
+             ('Categories - Male', "catlist&genders=m", "Show male cams only."), 
+             ('Categories - Couple', "catlist&genders=c", "Show couple cams only."), 
+             ('Categories - Trans', "catlist&genders=t", "Show trans cams only."), 
              ("Tags", "tagsmenu", "Show cams by tags for above categories. "),
              ("Favourites", "favourites", "Favourites list. Offline cams will have default picture."), 
              ("Search", "search", "Search for an exact username.\nShows on- AND offline cams."),
              ("Fuzzy search", "fuzzy", "List cams containing term in username.\nONLINE CAMS ONLY!"),
              ("Tools", "tools", "Some tools for cleanup and favourites.")
              )
-SITE_CATEGORIES = (('Featured', "featured-cams", ""),
-                   ("New cams", "new-cams", ""),
-                   ("Teen cams (18+)", "teen-cams", ""),
-                   ("18-21 cams", "18to21-cams", ""),
-                   ("20-30 cams", "20to30-cams", ""),
-                   ("30-50 cams", "30to50-cams", ""),
-                   ("Mature cams (50+)", "mature-cams", ""),
-                   ("North american cams", "north-american-cams", ""),
-                   ("South american cams", "south-american-cams", ""),
-                   ("Euro russian cams", "euro-russian-cams", ""),
-                   ("Asian cams", "asian-cams", ""),
-                   ("Other region cams", "other-region-cams", ""))
-SITE_CATS_F     = (('All', "female-cams", ""),
-                   ("New cams", "new-cams/female", ""),
-                   ("Teen cams (18+)", "teen-cams/female", ""),
-                   ("18-21 cams", "18to21-cams/female", ""),
-                   ("20-30 cams", "20to30-cams/female", ""),
-                   ("30-50 cams", "30to50-cams/female", ""),
-                   ("Mature cams (50+)", "mature-cams/female", ""),
-                   ("North american cams", "north-american-cams/female", ""),
-                   ("South american cams", "south-american-cams/female", ""),
-                   ("Euro russian cams", "euro-russian-cams/female", ""),
-                   ("Asian cams", "asian-cams/female", ""),
-                   ("Other region cams", "other-region-cams/female", ""))
-SITE_CATS_M     = (('All', "male-cams", ""),
-                   ("New cams", "new-cams/male", ""),
-                   ("Teen cams (18+)", "teen-cams/male", ""),
-                   ("18-21 cams", "18to21-cams/male", ""),
-                   ("20-30 cams", "20to30-cams/male", ""),
-                   ("30-50 cams", "30to50-cams/male", ""),
-                   ("Mature cams (50+)", "mature-cams/male", ""),
-                   ("North american cams", "north-american-cams/male", ""),
-                   ("South american cams", "south-american-cams/male", ""),
-                   ("Euro russian cams", "euro-russian-cams/male", ""),
-                   ("Asian cams", "asian-cams/male", ""),
-                   ("Other region cams", "other-region-cams/male", ""))
-SITE_CATS_C     = (('All', "couple-cams", ""),
-                   ("New cams", "new-cams/couple", ""),
-                   ("Teen cams (18+)", "teen-cams/couple", ""),
-                   ("18-21 cams", "18to21-cams/couple", ""),
-                   ("20-30 cams", "20to30-cams/couple", ""),
-                   ("30-50 cams", "30to50-cams/couple", ""),
-                   ("Mature cams (50+)", "mature-cams/couple", ""),
-                   ("North american cams", "north-american-cams/couple", ""),
-                   ("South american cams", "south-american-cams/couple", ""),
-                   ("Euro russian cams", "euro-russian-cams/couple", ""),
-                   ("Asian cams", "asian-cams/couple", ""),
-                   ("Other region cams", "other-region-cams/couple", ""))
-SITE_CATS_T     = (('All', "trans-cams", ""),
-                   ("New cams", "new-cams/trans", ""),
-                   ("Teen cams (18+)", "teen-cams/trans", ""),
-                   ("18-21 cams", "18to21-cams/trans", ""),
-                   ("20-30 cams", "20to30-cams/trans", ""),
-                   ("30-50 cams", "30to50-cams/trans", ""),
-                   ("Mature cams (50+)", "mature-cams/trans", ""),
-                   ("North american cams", "north-american-cams/trans", ""),
-                   ("South american cams", "south-american-cams/trans", ""),
-                   ("Euro russian cams", "euro-russian-cams/trans", ""),
-                   ("Asian cams", "asian-cams/trans", ""),
-                   ("Other region cams", "other-region-cams/trans", ""))
-SITE_TAGS = (('Tags - Featured', 'taglist-featured', ""), 
-             ('Tags - Female', 'taglist-f', ""),
-             ('Tags - Male', 'taglist-m', ""), 
-             ('Tags - Couple', 'taglist-c', ""), 
-             ('Tags - Transsexual', 'taglist-s', ""),)
+SITE_TAGS = (('Tags - Featured', 'taglist', ""), 
+             ('Tags - Female', 'taglist&genders=f', ""),
+             ('Tags - Male', 'taglist&genders=m', ""), 
+             ('Tags - Couple', 'taglist&genders=c', ""), 
+             ('Tags - Transsexual', 'taglist&genders=t', ""),)
 SITE_TOOLS = (("Backup Favourites", "tool=fav-backup", "Backup favourites (Set backup location in settings first). \nExisting favourites file will be overwritten without warning."),
               ("Restore Favourites", "tool=fav-restore", "Restore your favourites from backup location."),
               ("Delete Thumbnails", "tool=thumbnails-delete", "Delete cached chaturbate related thumbnail files and database entries."))
@@ -176,21 +132,11 @@ def evaluate_request():
     if sys.argv[2]:
         param = sys.argv[2]
         
-        # Handle static menu
-        if "categories" in param:
-            get_menu("categories")
-        elif "cats-f" in param:
-            get_menu("cats-f")
-        elif "cats-m" in param:
-            get_menu("cats-m")
-        elif "cats-c" in param:
-            get_menu("cats-c")
-        elif "cats-t" in param:
-            get_menu("cats-t")
-        elif "tagsmenu" in param:
-            get_menu("tags")
+        # Handle static menus
+        if "tagsmenu" in param:
+            get_menu(SITE_TAGS)
         elif "tools" in param:
-            get_menu("tools")
+            get_menu(SITE_TOOLS)
         elif "favourites" in param:
             get_favourites()
         elif "search" in param:
@@ -205,35 +151,20 @@ def evaluate_request():
                 tool_fav_restore()
             if tool == "thumbnails-delete":
                 tool_thumbnails_delete()
+        elif "catlist" in param:
+            get_catlist()
+        elif "roomlist" in param:
+            get_roomlist()
         # Handle dynamic menus
-        if "-cams" in param:
-            get_cams_by_category()
-        elif "taglist-" in param:
+        elif "taglist" in param:
             get_tag_list()
-        elif "tag=" in param:
-            get_cams_by_tag()
         elif "playactor=" in param:
-            play_actor(re.findall(r'\?playactor=(.*)', param)[0], ["Livecam"])
+            play_actor(re.findall(r'\?playactor=(.*)', param)[0], ["Stripchat"])
     else:
-        get_menu("main")
+        get_menu()
 
-def get_menu(param):
+def get_menu(itemlist=SITE_MENU):
     """Decision tree. Shows main menu by default"""
-    itemlist = SITE_MENU
-    if param == "categories":
-        itemlist = SITE_CATEGORIES
-    elif param == "cats-f":
-        itemlist = SITE_CATS_F
-    elif param == "cats-m":
-        itemlist = SITE_CATS_M
-    elif param == "cats-c":
-        itemlist = SITE_CATS_C
-    elif param == "cats-t":
-        itemlist = SITE_CATS_T
-    elif param == "tags":
-        itemlist = SITE_TAGS
-    elif param == "tools":
-        itemlist = SITE_TOOLS
         
     # Build menu items
     items = []
@@ -331,196 +262,155 @@ def get_favourites():
     xbmcplugin.addDirectoryItems(PLUGIN_ID, items)
     xbmcplugin.endOfDirectory(PLUGIN_ID)
 
-
-def get_cam_list(param):
-    """List cams by category, keywords or tag"""
-
-    #direct categories: cat=name
-    #keywords: cat=search&keywords=...
-    #tag: cat=tag&tagstring=... (tag/[]|f|m|c|s)
-
-    #page: always add or read from parameters &page=...
+def get_catlist():
+    # Disect url arguments
+    args = urllib.parse.parse_qs(sys.argv[2][1:])
+    genders = args.get('genders', [''])[0]
     
-
-
-def get_cams_by_category():
-    """List available cams by category"""
-
-    # Clean Thumbnails before opening the list
-    if DEL_THUMBS_ON_STARTUP:
-        tool_thumbnails_delete2()
-
-    # Filter category
-    cat = sys.argv[2].replace("?", "")
-
-    # Filter page or set page=1
-    if not "page=" in cat:
-        page = 1
-    else:
-        t = cat.split("&")
-        cat = t[0]
-        page = int(t[1].replace("page=", ""))
-
-    # Featured category is always an empty string on site, so handle it
-    if cat == "featured-cams":
-        data = get_site_page("/?" + "page=" + str(page))
-    else:
-        data = get_site_page(cat + "/?" + "page=" + str(page))
-
-    # Regex for available rooms
-    cams = re.findall(PAT_ACTOR_LIST3, data)
-
-    # Build kodi list items for virtual directory
+    # Menu items
+    itemlist = (("All", "roomlist&genders="+genders, ""),
+                   ("New cams", "roomlist&genders="+genders+"&new_cams=true", ""),
+                   ("Teen cams (18+)", "roomlist&genders="+genders+"&from_age=18&to_age=20", ""),
+                   ("18-21 cams", "roomlist&genders="+genders+"&from_age=18&to_age=22", ""),
+                   ("20-30 cams", "roomlist&genders="+genders+"&from_age=20&to_age=31", ""),
+                   ("30-50 cams", "roomlist&genders="+genders+"&from_age=30&to_age=51", ""),
+                   ("Mature cams (50+)", "roomlist&genders="+genders+"&from_age=50&to_age=200", ""),
+                   ("North american cams", "roomlist&genders="+genders+"&regions=NA", ""),
+                   ("South american cams", "roomlist&genders="+genders+"&regions=SA", ""),
+                   ("Euro russian cams", "roomlist&genders="+genders+"&regions=ER", ""),
+                   ("Asian cams", "roomlist&genders="+genders+"&regions=AS", ""),
+                   ("Other region cams", "roomlist&genders="+genders+"&regions=O", ""),
+                   ("Gaming cams", "roomlist&genders="+genders+"&gaming_cams=true", ""))
+    
+    # Build menu items
     items = []
-    id = 0
-    for item in cams:
-        #xbmc.log("Item: " + str(item), 1)
-        url = sys.argv[0] + '?playactor=' + item[0].decode("utf-8")
-        li = xbmcgui.ListItem(item[0].decode("utf-8"))
+    for item in itemlist:
+        url = sys.argv[0] + '?' + item[1]
+        li = xbmcgui.ListItem(item[0])
         tag = li.getVideoInfoTag()
-        # Extract viewers count for playcounter
-        s = item[7].decode("utf-8")
-        s = s.split(" ")[-2]
-        #xbmc.log("Viewers: '" + str(s)+"'", 1)
-        li.setLabel(item[0].decode("utf-8"))
-        li.setArt({'icon': item[1].decode("utf-8")})
-        tag.setSortTitle(str(id).zfill(2) + " - " + item[0].decode("utf-8"))
-        #xbmc.log("SortTitle: " + str(id).zfill(2) + " - " + item[0].decode("utf-8"), 1)
-        id = id + 1
-        tag.setPlot("Stats: " 
-                           + item[6].decode("utf-8") + ", " + item[7].decode("utf-8")
-                           + "\nAge: " + item[3].decode("utf-8").replace("&nbsp;","-") 
-                           + "\nLabel: " + item[2].decode("utf-8") 
-                           + "\nLocation: " + item[5].decode("utf-8") 
-                           + "\n\n"+item[4].decode("utf-8"))
-        #xbmc.log("PlayCount: " + str(s), 1)
-        #tag.setPlaycount(int(s)) #Not working probperly at the moment
-        li.setInfo('video', {'count': s})
-        
-
-        # Context menu
-        commands = []
-        commands.append(('[COLOR orange]' + ADDON_SHORTNAME + ' - Add as favourite [/COLOR]','RunScript(' + ADDON_NAME + ', ' + str(sys.argv[1]) + ', add_favourite, ' + item[0].decode("utf-8") + ')'))
-        commands.append(('[COLOR orange]' + ADDON_SHORTNAME + ' - Refresh thumbnails [/COLOR]','RunScript(' + ADDON_NAME + ', ' + str(sys.argv[1]) + ', ctx_thumbnails_delete)'))
-        li.addContextMenuItems(commands, True)
-        
+        tag.setPlot(item[2])
         items.append((url, li, True))
 
-    # Next page handling
-    try:
-        last_page = int(re.findall(PAT_PAGINATION, data)[-1])
-    except:
-        last_page = 1
-
-    if page < last_page:
-
-        # URL for next page button
-        nextpageurl = cat + "&" + "page=" + str(page+1)
-        xbmc.log("NEXT PAGE URL: " + str(nextpageurl),1)
-        # Next page button as listitem
-        li = xbmcgui.ListItem("Next page (%s of %s)" % (str(page + 1),str(last_page)))
-        tag = li.getVideoInfoTag()
-        li.setArt({'icon': 'DefaultFolder.png'})
-        tag.setSortTitle(str(id).zfill(2) + " - Next Page")
-        #tag.setPlaycount(-1)
-        li.setInfo('video', {'count': str(-1)})
-
-        # Context menu
-        commands = []
-        commands.append(('Back first page',"Container.Update(%s?%s, replace)" % ( sys.argv[0],  cat)))
-        commands.append(('Back main menu',"Container.Update(%s, replace)" % ( sys.argv[0])))
-        li.addContextMenuItems(commands, True)
-        
-        items.append((sys.argv[0] + '?'+nextpageurl, li, True))
-
-    # Put items to virtual directory listing and set sortings
-    put_virtual_directoy_listing(items)
-
-def get_cams_by_tag():
-    """List available cams by tag"""
-
-    # Clean Thumbnails before opening the list
-    if DEL_THUMBS_ON_STARTUP:
-        tool_thumbnails_delete2()
-
-    # Filter tag. Result is: ['page=int', 'tag=tagname', 'url=/tag/tagname/[f|m|c|s]/']
-    tagurl = sys.argv[2].replace("?", "")
-    tagurl = tagurl.replace("%2f", "/")
-    tagurl = tagurl.split("&")
-
-    # Get page as int for later use
-    page = int(tagurl[0].replace("page=", ""))
-
-    # URL to grab
-    graburl = tagurl[2].replace("url=/", "") + "?page=" + str(page)
-
-    # Store fetched HTML
-    data = get_site_page(graburl)
+    xbmcplugin.addDirectoryItems(PLUGIN_ID, items)
+    xbmcplugin.endOfDirectory(PLUGIN_ID)
     
-    # Regex for available rooms
-    cams = re.findall(PAT_ACTOR_LIST_TAGS, data)
+def get_roomlist():
+    # Disect url arguments
+    args = urllib.parse.parse_qs(sys.argv[2][1:])
     
-    # Build kodi list items for virtual directory
+    # Extract URL parameters
+    page        = int(args.get('page', [1])[0]) # for navigation
+    genders     = args.get('genders', [''])[0]
+    if page == 1: # Api returns one over limit for offset = 0
+        limit   = int(args.get('limit', [CAM_LIST_LIMIT-1])[0])
+    else:
+        limit   = int(args.get('limit', [CAM_LIST_LIMIT])[0])
+    offset      = int(args.get('offset', [0])[0])
+    offset      = (page - 1) * limit
+    new_cams    = args.get('new_cams', [None])[0]
+    hashtags    = args.get('hashtags', [None])[0] # for tags
+    keywords    = args.get('keywords', [None])[0] # for fuzzy search
+    gaming_cams = args.get('gaming_cams', [None])[0]
+    regions     = args.get('regions', [None])[0]
+    from_age    = args.get('from_age', [None])[0]
+    to_age      = args.get('to_age', [None])[0]
+    
+    # Build URL from parameters    
+    url = build_api_url_rooms(genders=genders, 
+                              offset=offset, 
+                              limit=limit, 
+                              new_cams=new_cams, 
+                              hashtags=hashtags, 
+                              keywords=keywords,
+                              gaming_cams=gaming_cams, 
+                              regions=regions, 
+                              from_age=from_age, 
+                              to_age=to_age)
+    # xbmc.log("API URL: " + str(url), 1)
+    
+    # Fetch the JSON data from the URL
+    data = fetch_json_from_url(url, REQUEST_TIMEOUT)
+    
+    #Build kodi list items for virtual directory
     items = []
-    
     id = 0
-    for item in cams:
-        url = sys.argv[0] + '?playactor=' + item[0].decode("utf-8")
-        li = xbmcgui.ListItem(item[0].decode("utf-8"))
-        tag = li.getVideoInfoTag()
-
-        # Extract viewers count for playcounter
-        s = item[7].decode("utf-8")
-        s = s.split(" ")[-2]
+    
+    if data:
+        # xbmc.log(ADDON_SHORTNAME + ": " + "JSON data fetched from URL: " + url, 1)
         
-        li.setLabel(item[0].decode("utf-8"))
-        li.setArt({'icon': item[1].decode("utf-8")})
-        tag.setSortTitle(str(id).zfill(2) + " - " + item[0].decode("utf-8"))
-        id = id + 1
-        tag.setPlot("Stats: "
-                           + item[6].decode("utf-8") + ", " + item[7].decode("utf-8")
-                           + "\nAge: " + item[3].decode("utf-8").replace("&nbsp;","-") 
-                           + "\nLabel: " + item[2].decode("utf-8") 
-                           + "\nLocation: " + item[5].decode("utf-8") 
-                           + "\n\n"+item[4].decode("utf-8"))
-        #tag.setPlaycount(int(s)) #Not working probperly at the moment
-        li.setInfo('video', {'count': s})
-
-        # Context menu
-        commands = []
-        commands.append(('[COLOR orange]' + ADDON_SHORTNAME + ' - Add as favourite[/COLOR]','RunScript(' + ADDON_NAME + ', ' + str(sys.argv[1]) + ', add_favourite, ' + item[0].decode("utf-8") + ')'))
-        commands.append(('[COLOR orange]' + ADDON_SHORTNAME + ' - Refresh thumbnails [/COLOR]','RunScript(' + ADDON_NAME + ', ' + str(sys.argv[1]) + ', ctx_thumbnails_delete)'))
-        li.addContextMenuItems(commands, True)
-
-        items.append((url, li, True))
-
-    # Next page handling
-    try:
-        last_page = int(re.findall(PAT_PAGINATION, data)[-1])
-    except:
-        last_page = 1
-
-    if page < last_page:
-
-        # URL for next page button
-        nextpageurl = sys.argv[0] + '?page=' + str(page+1) + "&" + tagurl[1] + "&" + tagurl[2].replace("/", "%2f")
-
-        # Next page button as listitem
-        li = xbmcgui.ListItem("Next page (%s of %s)" % (str(page + 1),str(last_page)))
-        tag = li.getVideoInfoTag()
-        tag.setSortTitle(str(id).zfill(2) + " - Next Page")
-        #tag.setPlaycount(-1)
-        li.setInfo('video', {'count': str(-1)})
-        li.setArt({'icon': 'DefaultFolder.png'})
-
-        # TODO: Context menu
-        commands = []
-        commands.append(('Back first page',"Container.Update(%s?%s, replace)" % ( sys.argv[0],  'page=1' + "&" + tagurl[1] + "&" + tagurl[2].replace("/", "%2f"))))
-        commands.append(('Back main menu',"Container.Update(%s, replace)" % ( sys.argv[0])))
-        li.addContextMenuItems(commands, True)
-
-        items.append((nextpageurl, li, True))
-
+        # Parse JSON data
+        try:
+            roomlist = extract_roomlist_from_json(data)
+            
+            # Extract rooms from roomlist and build listitems
+            for room in roomlist.get('rooms', []):
+                # Set navigation URL for room
+                url = sys.argv[0] + '?playactor=' + room.get('username')
+                # Build listitem
+                li = xbmcgui.ListItem(room.get('username'))
+                # Create video info tag
+                tag = li.getVideoInfoTag()
+                # Extract num_users count for playcounter
+                s = room.get('num_users', 0)
+                li.setLabel(room.get('username'))
+                li.setArt({'icon': room.get('img')})
+                tag.setSortTitle(str(id).zfill(2) + " - " + room.get('username'))
+                id = id + 1
+                tag.setPlot("Age: " + str(room.get('display_age', "-"))
+                            + "\nLabel: " + room.get('label', "-")
+                            + "\nViewers: " + str(room.get('num_users', 0)) 
+                            + "\nOnline: " + room.get('online_since')
+                            + "\nFollowers: " + str(room.get('num_followers', 0)) 
+                            + "\nLocation: " + room.get('location', "-")
+                            + "\n\n" + room.get('subject', "-")
+                            )
+                li.setInfo('video', {'count': s})
+                
+                # Context menu
+                commands = []
+                commands.append(('[COLOR orange]' + ADDON_SHORTNAME + ' - Add as favourite [/COLOR]','RunScript(' + ADDON_NAME + ', ' + str(sys.argv[1]) + ', add_favourite, ' + room.get('username') + ')'))
+                commands.append(('[COLOR orange]' + ADDON_SHORTNAME + ' - Refresh thumbnails [/COLOR]','RunScript(' + ADDON_NAME + ', ' + str(sys.argv[1]) + ', ctx_thumbnails_delete)'))
+                li.addContextMenuItems(commands, True)
+                
+                items.append((url, li, True))
+        except:
+            if keywords:
+                xbmcgui.Dialog().ok(ADDON_SHORTNAME + " Fuzzy Search", "No cams found matching keywords.")
+            else:
+                xbmcgui.Dialog().ok(ADDON_SHORTNAME + " Error", "Error extracting roomlist from JSON.")
+            xbmc.log(ADDON_SHORTNAME + ": " + "Error extracting roomlist from JSON.", level=xbmc.LOGERROR)
+            return False
+        
+        # Pagination
+        total_count = data.get('total_count', 0)
+        if page == 1:
+            total_pages = math.ceil(total_count / (limit+1))
+        else:
+            total_pages = math.ceil(total_count / limit)
+        
+        xbmc.log("Total count: " + str(total_count) + " Pages: " + str(total_pages), 1)
+        
+        if page < total_pages:
+            next_url = build_roomlist_url(page=page + 1, genders=genders, new_cams=new_cams, hashtags=hashtags, keywords=keywords, gaming_cams=gaming_cams, regions=regions, from_age=from_age, to_age=to_age)
+            # xbmc.log("NEXT PAGE URL: " + str(next_url),1)
+            li = xbmcgui.ListItem(f"Page {page + 1} of {total_pages}")
+            li.setArt({'icon': 'DefaultFolder.png'})
+            li.setInfo('video', {'sorttitle': str(999).zfill(2) + " - Next Page"})
+            li.setInfo('video', {'count': str(-1)})
+            
+            # Context menu
+            commands = []
+            commands.append(('Back to first page',"Container.Update(%s?%s, replace)" % ( sys.argv[0],  "roomlist&genders="+genders)))
+            commands.append(('Back to main menu',"Container.Update(%s, replace)" % ( sys.argv[0])))
+            li.addContextMenuItems(commands, True)
+            
+            items.append((sys.argv[0] + '?'+next_url, li, True))
+        
+    else:
+        xbmcgui.Dialog().ok(ADDON_SHORTNAME + " Error", "Error listing available cams. Could not fetch JSON from API.")
+        xbmc.log(ADDON_SHORTNAME + ": " + "Could not fetch JSON data from URL: " + url, level=xbmc.LOGERROR)
+        return False
+    
     # Put items to virtual directory listing and set sortings
     put_virtual_directoy_listing(items)
 
@@ -534,58 +424,27 @@ def put_virtual_directoy_listing(items):
     xbmcplugin.endOfDirectory(PLUGIN_ID)
 
 def get_tag_list():
-    """Get list of available tag for the categories"""
-        
-    # Filter parameter
-    paras = sys.argv[2].replace("%2f", "/")
-    paras = paras.replace("?", "")
-    paras = paras.split("/")
+    """Get list of available tags for the categories"""
     
-    # Build API url
-    apiUrl = ""
-    
-    genre = re.findall(r'taglist-(.*)', paras[0])[0] # featured
-    genreFull = ""
-    
-    if genre == "featured":
-        genreFull = "/"
-        genre = "" # f,m,c,s (all eq empty strong)
-    elif genre == "f":
-        genreFull = "/female/"
-    elif genre == "m":
-        genreFull = "/male/"
-    elif genre == "c":
-        genreFull = "/couple/"
-    elif genre == "s":
-        genreFull = "/trans/"
-    
-    page = "1"
-    limit = str(TAG_LIST_LIMIT)
-    sortBy = TAG_SORT_BY_STD  # ht = hashtag | rc = room count | vc = viewer count. prefix "-" to reverse order
-    
-    if len(paras) == 4: # Subsequent calls from pagination links or context menu
-        # Default parameters
-        page = paras[1]
-        limit = paras[2]
-        sortBy = paras[3]
-    
-    apiUrl = API_ENDPOINT_TAGLIST.format(genre, page, limit, sortBy)
+    # Disect url arguments
+    args = urllib.parse.parse_qs(sys.argv[2][1:])
+    genders = args.get('genders', [''])[0]
+    page = args.get('page', ['1'])[0]
+    limit = args.get('limit', [TAG_LIST_LIMIT])[0]
+    sortBy = args.get('sort', [TAG_SORT_BY_STD])[0] # ht = hashtag | rc = room count | vc = viewer count. prefix "-" to reverse order
 
     # Get json data
-    v = get_site_page_full(apiUrl)
-    v = json.loads(v)
+    roomlist = json.loads(json.dumps(fetch_json_from_url(API_ENDPOINT_TAGLIST.format(genders, page, limit, sortBy), REQUEST_TIMEOUT)))
     
     items = []
     
-    if "hashtags" in v: # no error, we have results
-        total = int(v["total"])
-        xbmc.log("Total tags in genre: " + str(total), 1)
+    if "hashtags" in roomlist: # no error, we have results
+        total = int(roomlist["total"])
+        # xbmc.log("Total tags in genders: " + str(total), 1)
         
         id = 0
-        for item in v["hashtags"]: # URL example: ?tag=tagname&page=1&url=/tag/tagname/genre/
-            url = sys.argv[0] + '?tag=' + \
-                item["hashtag"] + "&page=1" + \
-                "&url=/tag/" + item["hashtag"] + genreFull
+        for item in roomlist["hashtags"]:
+            url = sys.argv[0] + '?roomlist&genders=' + genders + "&hashtags=" + item["hashtag"]
             li = xbmcgui.ListItem(item["hashtag"])
             tag = li.getVideoInfoTag()
             li.setLabel(item["hashtag"] + " (%s)" %
@@ -602,10 +461,8 @@ def get_tag_list():
         if totalPages > 1: # We have enough results for at least two pages
             if int(page) + 1 < totalPages:
                 # URL for next page button
-                if genre == "":
-                    genre = "featured"
-                nextpageurl = "taglist-" + genre + "/" + str(int(page)+1) + "/" + limit + "/" + sortBy
-                #xbmc.log("NEXT PAGE URL: " + str(nextpageurl),1)
+                next_url = "taglist&genders=" + genders + "&page=" + str(int(page)+1)
+                # xbmc.log("NEXT PAGE URL: " + str(next_url),1)
                 li = xbmcgui.ListItem("Next page (%s of %s)" % (str(int(page)+1),str(totalPages)))
                 tag = li.getVideoInfoTag()
                 li.setArt({'icon': 'DefaultFolder.png'})
@@ -615,12 +472,11 @@ def get_tag_list():
                 
                 # Context menu
                 commands = []
-                firstpageurl = "taglist-" + genre + "/1/" + limit + "/" + sortBy
-                commands.append(('Back first page',"Container.Update(%s?%s, replace)" % ( sys.argv[0],  firstpageurl)))
-                commands.append(('Back main menu',"Container.Update(%s, replace)" % ( sys.argv[0])))
+                commands.append(('Back to first page',"Container.Update(%s?%s, replace)" % ( sys.argv[0],  "taglist&genders=" + genders)))
+                commands.append(('Back to main menu',"Container.Update(%s, replace)" % ( sys.argv[0])))
                 li.addContextMenuItems(commands, True)
                 
-                items.append((sys.argv[0] + '?'+nextpageurl, li, True))
+                items.append((sys.argv[0] + '?'+next_url, li, True))
     
     # Build kodi listems for virtual directory
     # Put items to virtual directory listing and set sortings
@@ -632,8 +488,7 @@ def get_tag_list():
 
 def get_bio_context_from_actor(actor):
     url = API_ENDPOINT_BIO.format(actor)
-    b = get_site_page_full(url)
-    b = json.loads(b)    
+    b = json.loads(json.dumps(fetch_json_from_url(url, REQUEST_TIMEOUT)))
     return get_bio_context_from_json(b)
 
 def get_bio_context_from_json(b):
@@ -650,6 +505,7 @@ def get_bio_context_from_json(b):
     # sex (I am: )
     if "sex" in b and not b['sex'] == "":
         s += " | I am: " + b['sex']
+        #s += " | I am: " + b.get('sex', 'na')
     # real_name (Name: )
     if "real_name" in b and not b['real_name'] == "":
         s += " | Real name: " + b['real_name']
@@ -695,13 +551,11 @@ def play_actor(actor, genre=[""]):
     try:      
         # Fetch Videocontext
         url = API_ENDPOINT_VIDEO.format(actor)
-        v = get_site_page_full(url)
-        v = json.loads(v)
+        v = json.loads(json.dumps(fetch_json_from_url(url, REQUEST_TIMEOUT)))
         
         # Fetch Biocontext
         url = API_ENDPOINT_BIO.format(actor)
-        b = get_site_page_full(url)
-        b = json.loads(b)  
+        b = json.loads(json.dumps(fetch_json_from_url(url, REQUEST_TIMEOUT)))
         
         # Playlist
         hls_source = v['hls_source']
@@ -746,28 +600,33 @@ def play_actor(actor, genre=[""]):
             else:
                 xbmcgui.Dialog().ok("Unknown error", "Something went wrong with info extraction.\nError: " + str(e))  
 
-
-def get_site_page(page):
-    """Fetch HTML data from site"""
-
-    url = "%s/%s" % (SITE_URL, page)
-    xbmc.log("URL: " + str(url),1)
-    req = urllib.request.Request(url)
-    req.add_header('Referer', SITE_REFFERER)
-    req.add_header('Origin', SITE_ORIGIN)
-    req.add_header('User-Agent', USER_AGENT)
+def fetch_json_from_url(url, timeout):
+    """Fetch JSON from URL with timeout"""
     
-    return urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT).read()
-
-def get_site_page_full(page):
-    """Fetch HTML data from site"""
-    xbmc.log("URL: " + str(page),1)
-    req = urllib.request.Request(page)
-    req.add_header('Referer', SITE_REFFERER)
-    req.add_header('Origin', SITE_ORIGIN)
-    req.add_header('User-Agent', USER_AGENT)
+    # Create a Request object with the URL and headers
+    req = urllib.request.Request(url, headers=REQUEST_HEADERS)
     
-    return urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT).read()
+    try:
+        # Perform the GET request with a timeout
+        with urllib.request.urlopen(req, timeout=timeout) as response:
+            # Read and decode the response
+            raw_data = response.read().decode()
+            
+            # Parse the JSON from the response
+            data = json.loads(raw_data)
+            
+            # Return the parsed JSON data
+            return data
+            
+    except urllib.error.HTTPError as e:
+        # HTTP errors (e.g., 404 or 501)
+        xbmc.log(ADDON_SHORTNAME + ": "f"HTTP Error: {e.code}", level=xbmc.LOGERROR)
+        return None  # Indicate failure by returning None
+        
+    except urllib.error.URLError as e:
+        # Other errors (e.g., connection error, timeout)
+        xbmc.log(ADDON_SHORTNAME + ": " + f"An error occurred: {e.reason}", level=xbmc.LOGERROR)
+        return None  # Indicate failure by returning None
 
 def search_actor():
     """Search for actor/username and list item if username exists"""
@@ -780,13 +639,12 @@ def search_actor():
         try:
             # Fetch Videocontext
             url = API_ENDPOINT_VIDEO.format(s)
-            v = get_site_page_full(url)
-            v = json.loads(v)
+            xbmc.log("URL: " + str(url),1)
+            v = json.loads(json.dumps(fetch_json_from_url(url, REQUEST_TIMEOUT)))
         
             # Fetch Biocontext
             url = API_ENDPOINT_BIO.format(s)
-            b = get_site_page_full(url)
-            b = json.loads(b) 
+            b = json.loads(json.dumps(fetch_json_from_url(url, REQUEST_TIMEOUT)))
         
             # Room status
             status = v['room_status']
@@ -839,56 +697,9 @@ def search_actor2():
         xbmcplugin.endOfDirectory(int(sys.argv[1]), succeeded=False)
         return
     
-    data = get_site_page("/?keywords=" + s)
-        
-        
-    # Regex for available rooms
-    cams = re.findall(PAT_ACTOR_LIST3, data)
-    i = len(cams)
-    if i == 0:
-        xbmcgui.Dialog().notification("Fuzzy search", "No cams for this keyword", "", 1000, False)
-        return
-    
-    # Build kodi listems for virtual directory
-    items = []
-    id = 0
-    for item in cams:
-        url = sys.argv[0] + '?playactor=' + item[0].decode("utf-8")
-        li = xbmcgui.ListItem(item[0].decode("utf-8"))
-        tag = li.getVideoInfoTag()
-        
-        # Extract viewers count
-        s = item[6].decode("utf-8")
-        s = s.split(" ")[-2]
-
-        li.setLabel(item[0].decode("utf-8"))
-        li.setArt({'icon': item[1].decode("utf-8")})
-        tag.setSortTitle(str(id).zfill(2) + " - " + item[0].decode("utf-8"))
-        id = id + 1
-        tag.setPlot("Stats: " 
-                           + item[6].decode("utf-8")
-                           + "\nAge: " + item[3].decode("utf-8").replace("&nbsp;","-") 
-                           + "\nLabel: " + item[2].decode("utf-8") 
-                           + "\nLocation: " + item[5].decode("utf-8") 
-                           + "\n\n"+item[4].decode("utf-8"))
-        tag.setPlaycount(s)
-
-        # Context menu
-        commands = []
-        commands.append(('[COLOR orange]' + ' - Add as favourite [/COLOR]','RunScript(' + ADDON_NAME + ', ' + str(sys.argv[1]) + ', add_favourite, ' + item[0].decode("utf-8") + ')'))
-        li.addContextMenuItems(commands, True)
-        
-        items.append((url, li, True))
-
-    # Put items to virtual directory listing and set sortings
-    xbmcplugin.setContent(int(sys.argv[1]), 'videos')
-    xbmcplugin.addSortMethod(
-        int(sys.argv[1]), xbmcplugin.SORT_METHOD_VIDEO_SORT_TITLE)
-    xbmcplugin.addSortMethod(
-        int(sys.argv[1]), xbmcplugin.SORT_METHOD_PROGRAM_COUNT)
-    xbmcplugin.addSortMethod(int(sys.argv[1]), xbmcplugin.SORT_METHOD_LABEL)
-    xbmcplugin.addDirectoryItems(PLUGIN_ID, items)
-    xbmcplugin.endOfDirectory(PLUGIN_ID)  
+    # Set keywords in sys.argv[2]
+    sys.argv[2] = "?roomlist&keywords=" + s
+    get_roomlist()    
     
 def tool_thumbnails_delete():
     rc = tool_thumbnails_delete2()
@@ -922,6 +733,71 @@ def tool_thumbnails_delete2():
     # Return number of entries found and log
     xbmc.log(ADDON_SHORTNAME + ": Deleted %s thumbnail files and database entries" % (str(rc)),1)
     return rc
+
+def extract_roomlist_from_json(data):
+    # Initialize the result dictionary with a total_count key and an empty rooms list
+    result = {'total_count': data.get('total_count', 0), 'rooms': []}
+    
+    for room in data.get('rooms', []):
+        # Initialize a new room dictionary for the current room
+        new_room = {}
+        
+        # Copy selected keys directly 
+        direct_keys = ['display_age', 'gender', 'location', 'current_show', 'username', 'is_new', 'num_users', 'num_followers', 'start_timestamp', 'label']
+        for key in direct_keys:
+            new_room[key] = room.get(key, None)
+        
+        # Calculate the time online_since based on start_timestamp
+        start_timestamp = room.get('start_timestamp', None)
+        if start_timestamp:
+            new_room['online_since'] = convert_timestamp_to_elapsed(room.get('start_timestamp', None))
+        else:
+            new_room['online_since'] = "0h 0m"
+        
+        # Convert tags into a comma-separated list
+        tags = room.get('tags', [])
+        new_room['tags'] = ', '.join(tags)
+        
+        # Replace "/riw/" with "/ri/" in the img URL (we want square images, not wide ones)
+        img_url = room.get('img', '')
+        new_room['img'] = img_url.replace("/riw/", "/ri/")
+        
+        # Remove a-tags and convert special characters in the subject
+        subject = room.get('subject', '')
+        subject = filter_and_unescape_html(subject)
+        new_room['subject'] = subject
+        
+        # Append the new room dictionary to the result
+        result['rooms'].append(new_room)
+        
+    return result
+
+def convert_timestamp_to_elapsed(start_timestamp):
+    now = datetime.now(timezone.utc).timestamp()
+    elapsed_time = int(now - start_timestamp)
+    hours, remainder = divmod(elapsed_time, 3600)
+    minutes, _ = divmod(remainder, 60)
+    return f"{hours}h {minutes}m"
+
+def filter_and_unescape_html(input_str):
+    # Replace <a> with the text in between
+    filtered_str = re.sub(r'<a .*?>(.*?)<\/a>', r'\1', input_str)
+    # convert HTML-entities in readable text
+    return html.unescape(filtered_str)
+
+def build_api_url_rooms(**kwargs):
+    url = API_ENDPOINT_ROOMS
+    for key, value in kwargs.items():
+        if value:
+            url += f"&{key}={value}"   
+    return url
+
+def build_roomlist_url(**kwargs):
+    url = sys.argv[0] + '?roomlist'
+    for key, value in kwargs.items():
+        if value:
+            url += f"&{key}={value}"   
+    return url
 
 if __name__ == "__main__":
     evaluate_request()
