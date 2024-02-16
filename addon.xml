@@ -1,7 +1,9 @@
 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<addon id="plugin.video.cb20" version="2.0.0" name="CB20" provider-name="aitschti">
+<addon id="plugin.video.cb20" version="2.1.0" name="CB20" provider-name="aitschti">
     <requires>
         <import addon="xbmc.python" version="3.0.0"/>
+        <!-- Other dependencies -->
+        <import addon="inputstream.ffmpegdirect" version="20.0.0"/>
     </requires>
     <extension point="xbmc.python.pluginsource" library="addon.py">
         <provides>video</provides>
@@ -21,12 +23,12 @@ All changes on GitHub: https://github.com/aitschti/plugin.video.cb20
         <forum></forum>
         <website></website>
         <email>last5mins@yandex.com</email>
-        <summary lang="en_GB">Chaturbate for Kodi 20</summary>
-        <summary lang="de_DE">Chaturbate für Kodi 20</summary>
-        <description lang="en_GB">Chaturbate streaming for Kodi 20</description>
-        <description lang="de_DE">Chaturbate streaming für Kodi 20</description>
-        <disclaimer lang="en_GB">(c) 2023 aitschti</disclaimer>
-        <disclaimer lang="de_DE">(c) 2023 aitschti</disclaimer>
+        <summary lang="en_GB">Chaturbate for Kodi 20+</summary>
+        <summary lang="de_DE">Chaturbate für Kodi 20+</summary>
+        <description lang="en_GB">Chaturbate streaming for Kodi 20+</description>
+        <description lang="de_DE">Chaturbate streaming für Kodi 20+</description>
+        <disclaimer lang="en_GB">(c) 2024 aitschti</disclaimer>
+        <disclaimer lang="de_DE">(c) 2024 aitschti</disclaimer>
         <reuselanguageinvoker>false</reuselanguageinvoker>
     </extension>
 </addon>
