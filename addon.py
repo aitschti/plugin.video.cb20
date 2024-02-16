@@ -567,7 +567,14 @@ def play_actor(actor, genre=[""]):
         # Thumbnail for OSD (Square)
         li.setArt({'icon': THUMB_SQUARE.format(actor)})
         li.setMimeType('application/vnd.apple.mpegstream_url')
-
+        # Get stream player setting
+        stream_player = xbmcaddon.Addon().getSetting('stream_player')
+        # Set inputstream addon based on setting
+        if stream_player == "0":
+            xbmc.log(ADDON_SHORTNAME + ": " + "Using default stream player", 1)
+        if stream_player == "1":
+            li.setProperty('inputstream', 'inputstream.ffmpegdirect')
+            xbmc.log(ADDON_SHORTNAME + ": " + "Using InputStream FFmpegDirect", 1)
         # Play stream
         xbmc.Player().play(hls_source, li)
     
