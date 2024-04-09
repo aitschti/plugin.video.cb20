@@ -1,7 +1,7 @@
 # plugin.video.cb20
-A kodi plugin for streaming cams from chaturbate.com. Works with all kodi 20 and 21 releases.
+A kodi plugin for streaming cams from chaturbate.com. Works with all kodi v20 and v21 releases.
 
-Tested on Android (Fire TV) and Windows, should work fine with other Linux systems. Not available in a kodi repository, so use "Install from ZIP" in kodi and point to the zip file to install.
+Tested on Android (Fire TV) and Windows, should work fine with other Linux systems. Not available in a kodi repository, so use "Install from ZIP" in kodi and point to the zip file to install (Allow install from unknown source under Settings > System > Add-ons Unknown sources).
 
 ## Features
 
@@ -15,7 +15,7 @@ Tested on Android (Fire TV) and Windows, should work fine with other Linux syste
 
 - Tested with Estuary skin only
 - "Info wall" is the recommended view for listings as you get a little more details about the cam
-- Sort by play counter, descending (shows and sorty by viewer number)
+- Sort by play counter, descending (shows and sort by viewer number)
 - Check setting for thumbnails to "Delete thumbnails every time you open a list". This will send a lot more requests to the site, but you will get newest preview images. Otherwise Kodi will serve cached versions and therefore possibly outdated images, if you do not clean caches otherwise. Default off to minimize requests.
 
 ## Todo
