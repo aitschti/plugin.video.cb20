@@ -17,8 +17,7 @@ PATH_THUMBS = xbmcvfs.translatePath("special://userdata/Thumbnails/")
 Q_THUMBNAILS = "SELECT url,cachedurl FROM texture WHERE url LIKE '%.highwebmedia.com%'"
 Q_DEL_THUMBNAILS = "DELETE FROM texture WHERE url LIKE '%.highwebmedia.com%'"
 
-xbmc.log(ADDON_NAME + ": " + str(sys.argv), 1)
-#xbmcgui.Dialog().ok("OFFLINE", "The user is currently offline. Please try again later.")
+# xbmc.log(ADDON_NAME + ": " + str(sys.argv), 1)
 
 def clean_database():
     conn = sqlite3.connect(xbmcvfs.translatePath("special://database/Textures13.db"))
@@ -49,10 +48,6 @@ def refresh_container():
             xbmc.log(ADDON_NAME + ": Cleaned up thumnails!", 1)
     except:
         pass
-    #xbmc.executebuiltin("Container.Update('plugin://plugin.video.cb20?main')")
-    #xbmc.executebuiltin("Container.Refresh") 
-    #xbmcplugin.endOfDirectory(int(sys.argv[1]), cacheToDisc=False)
-    #xbmc.executebuiltin("Container.Refresh")
 
 
 def connect_favourites_db():
