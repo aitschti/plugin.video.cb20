@@ -107,40 +107,53 @@ STRINGS = {
 
 def evaluate_request():
     """Evaluate what has been picked in Kodi"""
-
-    if sys.argv[2]:
-        param = sys.argv[2]
-        
-        # Handle static menus
-        if "tagsmenu" in param:
-            get_menu(SITE_TAGS)
-        elif "tools" in param:
-            get_menu(SITE_TOOLS)
-        elif "favourites" in param:
-            get_favourites()
-        elif "search" in param:
-            search_actor()
-        elif "fuzzy" in param:
-            search_actor2()
-        elif "tool=" in param:
-            tool = re.findall(r'\?tool=(.*)', param)[0]
-            if tool == "fav-backup":
-                tool_fav_backup()
-            if tool == "fav-restore":
-                tool_fav_restore()
-            if tool == "thumbnails-delete":
-                tool_thumbnails_delete()
-        elif "catlist" in param:
-            get_catlist()
-        elif "roomlist" in param:
-            get_roomlist()
-        # Handle dynamic menus
-        elif "taglist" in param:
-            get_tag_list()
-        elif "playactor=" in param:
-            play_actor(re.findall(r'\?playactor=(.*)', param)[0], ["Chaturbate"])
-    else:
+    
+    if not sys.argv[2]:
         get_menu()
+        return
+
+    param = sys.argv[2]
+    
+    # Map parameters to functions
+    param_map = {
+        "tagsmenu": lambda: get_menu(SITE_TAGS),
+        "tools": lambda: get_menu(SITE_TOOLS),
+        "favourites": get_favourites,
+        "search": search_actor,
+        "fuzzy": search_actor2,
+        "tool=": handle_tool,
+        "catlist": get_catlist,
+        "roomlist": get_roomlist,
+        "taglist": get_tag_list,
+        "playactor=": lambda x: play_actor(x, ["Chaturbate"])
+    }
+
+    # Find matching parameter and call corresponding function
+    for key, func in param_map.items():
+        if key in param:
+            if key == "tool=":
+                tool = re.findall(r'\?tool=(.*)', param)[0]
+                handle_tool(tool)
+            elif key == "playactor=":
+                actor = re.findall(r'\?playactor=(.*)', param)[0]
+                func(actor)
+            else:
+                func()
+            return
+
+    # If no matching parameter found
+    xbmc.log(f"{ADDON_SHORTNAME}: Unhandled parameter: {param}", level=xbmc.LOGERROR)
+
+def handle_tool(tool):
+    tool_map = {
+        "fav-backup": tool_fav_backup,
+        "fav-restore": tool_fav_restore,
+        "thumbnails-delete": tool_thumbnails_delete
+    }
+    if tool in tool_map:
+        tool_map[tool]()
+    else:
+        xbmc.log(f"{ADDON_SHORTNAME}: Unhandled tool: {tool}", level=xbmc.LOGERROR)
 
 def get_menu(itemlist=SITE_MENU):
     """Decision tree. Shows main menu by default"""
@@ -150,8 +163,8 @@ def get_menu(itemlist=SITE_MENU):
     for item in itemlist:
         url = sys.argv[0] + '?' + item[1]
         li = xbmcgui.ListItem(item[0])
-        tag = li.getVideoInfoTag()
-        tag.setPlot(item[2])
+        vit = li.getVideoInfoTag()
+        vit.setPlot(item[2])
         items.append((url, li, True))
 
     xbmcplugin.addDirectoryItems(PLUGIN_ID, items)
@@ -266,8 +279,8 @@ def get_catlist():
     for item in itemlist:
         url = sys.argv[0] + '?' + item[1]
         li = xbmcgui.ListItem(item[0])
-        tag = li.getVideoInfoTag()
-        tag.setPlot(item[2])
+        vit = li.getVideoInfoTag()
+        vit.setPlot(item[2])
         items.append((url, li, True))
 
     xbmcplugin.addDirectoryItems(PLUGIN_ID, items)
@@ -305,18 +318,15 @@ def get_roomlist():
                               regions=regions, 
                               from_age=from_age, 
                               to_age=to_age)
-    # xbmc.log("API URL: " + str(url), 1)
     
     # Fetch the JSON data from the URL
     data = fetch_json_from_url(url, REQUEST_TIMEOUT)
     
-    #Build kodi list items for virtual directory
+    # Build kodi list items for virtual directory
     items = []
     id = 0
     
-    if data:
-        # xbmc.log(ADDON_SHORTNAME + ": " + "JSON data fetched from URL: " + url, 1)
-        
+    if data:        
         # Parse JSON data
         try:
             roomlist = extract_roomlist_from_json(data)
@@ -328,14 +338,14 @@ def get_roomlist():
                 # Build listitem
                 li = xbmcgui.ListItem(room.get('username'))
                 # Create video info tag
-                tag = li.getVideoInfoTag()
+                vit = li.getVideoInfoTag()
                 # Extract num_users count for playcounter
                 s = room.get('num_users', 0)
                 li.setLabel(room.get('username'))
                 li.setArt({'icon': room.get('img')})
-                tag.setSortTitle(str(id).zfill(2) + " - " + room.get('username'))
+                vit.setSortTitle(str(id).zfill(2) + " - " + room.get('username'))
                 id = id + 1
-                tag.setPlot("Age: " + str(room.get('display_age', "-"))
+                vit.setPlot("Age: " + str(room.get('display_age', "-"))
                             + "\nLabel: " + room.get('label', "-")
                             + "\nViewers: " + str(room.get('num_users', 0)) 
                             + "\nOnline: " + room.get('online_since')
@@ -343,7 +353,7 @@ def get_roomlist():
                             + "\nLocation: " + room.get('location', "-")
                             + "\n\n" + room.get('subject', "-")
                             )
-                li.setInfo('video', {'count': s})
+                vit.setPlaycount(int(s))
                 
                 # Context menu
                 commands = []
@@ -371,11 +381,12 @@ def get_roomlist():
         
         if page < total_pages:
             next_url = build_roomlist_url(page=page + 1, genders=genders, new_cams=new_cams, hashtags=hashtags, keywords=keywords, gaming_cams=gaming_cams, regions=regions, from_age=from_age, to_age=to_age)
-            # xbmc.log("NEXT PAGE URL: " + str(next_url),1)
             li = xbmcgui.ListItem(f"Page {page + 1} of {total_pages}")
+            vit = li.getVideoInfoTag()
+            
             li.setArt({'icon': 'DefaultFolder.png'})
-            li.setInfo('video', {'sorttitle': str(999).zfill(2) + " - Next Page"})
-            li.setInfo('video', {'count': str(-1)})
+            vit.setSortTitle(str(999).zfill(2) + " - Next Page")
+            vit.setPlaycount(-1)
             
             # Context menu
             commands = []
@@ -395,10 +406,10 @@ def get_roomlist():
 
 def put_virtual_directoy_listing(items):
     """Put items to virtual directory listing and set sortings"""
-    xbmcplugin.setContent(int(sys.argv[1]), 'videos')
-    xbmcplugin.addSortMethod(int(sys.argv[1]), xbmcplugin.SORT_METHOD_VIDEO_SORT_TITLE)
-    xbmcplugin.addSortMethod(int(sys.argv[1]), xbmcplugin.SORT_METHOD_PROGRAM_COUNT)
-    xbmcplugin.addSortMethod(int(sys.argv[1]), xbmcplugin.SORT_METHOD_LABEL)
+    xbmcplugin.setContent(PLUGIN_ID, 'videos')
+    xbmcplugin.addSortMethod(PLUGIN_ID, xbmcplugin.SORT_METHOD_VIDEO_SORT_TITLE)
+    xbmcplugin.addSortMethod(PLUGIN_ID, xbmcplugin.SORT_METHOD_PLAYCOUNT, "Viewers")
+    xbmcplugin.addSortMethod(PLUGIN_ID, xbmcplugin.SORT_METHOD_LABEL)
     xbmcplugin.addDirectoryItems(PLUGIN_ID, items)
     xbmcplugin.endOfDirectory(PLUGIN_ID)
 
@@ -419,18 +430,16 @@ def get_tag_list():
     
     if "hashtags" in roomlist: # no error, we have results
         total = int(roomlist["total"])
-        # xbmc.log("Total tags in genders: " + str(total), 1)
         
         id = 0
         for item in roomlist["hashtags"]:
             url = sys.argv[0] + '?roomlist&genders=' + genders + "&hashtags=" + item["hashtag"]
             li = xbmcgui.ListItem(item["hashtag"])
-            tag = li.getVideoInfoTag()
+            vit = li.getVideoInfoTag()
             li.setLabel(item["hashtag"] + " (%s)" %
                         item["room_count"])
-            # tag.setPlaycount(int(item["room_count"]))
-            li.setInfo('video', {'count': item["room_count"]})
-            tag.setSortTitle(str(id).zfill(3) + " - " + item["hashtag"])
+            vit.setPlaycount(int(item["room_count"]))
+            vit.setSortTitle(str(id).zfill(3) + " - " + item["hashtag"])
             items.append((url, li, True))
             id = id + 1
         
@@ -441,13 +450,11 @@ def get_tag_list():
             if int(page) + 1 < totalPages:
                 # URL for next page button
                 next_url = "taglist&genders=" + genders + "&page=" + str(int(page)+1)
-                # xbmc.log("NEXT PAGE URL: " + str(next_url),1)
                 li = xbmcgui.ListItem("Next page (%s of %s)" % (str(int(page)+1),str(totalPages)))
-                tag = li.getVideoInfoTag()
+                vit = li.getVideoInfoTag()
                 li.setArt({'icon': 'DefaultFolder.png'})
-                tag.setSortTitle(str(id).zfill(2) + " - Next Page")
-                # tag.setPlaycount(-1)
-                li.setInfo('video', {'count': str(-1)})
+                vit.setSortTitle(str(id).zfill(2) + " - Next Page")
+                vit.setPlaycount(-1)
                 
                 # Context menu
                 commands = []
@@ -459,9 +466,9 @@ def get_tag_list():
     
     # Build kodi listems for virtual directory
     # Put items to virtual directory listing and set sortings
-    xbmcplugin.addSortMethod(int(sys.argv[1]), xbmcplugin.SORT_METHOD_VIDEO_SORT_TITLE)
-    xbmcplugin.addSortMethod(int(sys.argv[1]), xbmcplugin.SORT_METHOD_PROGRAM_COUNT)
-    xbmcplugin.addSortMethod(int(sys.argv[1]), xbmcplugin.SORT_METHOD_LABEL)
+    xbmcplugin.addSortMethod(PLUGIN_ID, xbmcplugin.SORT_METHOD_VIDEO_SORT_TITLE)
+    xbmcplugin.addSortMethod(PLUGIN_ID, xbmcplugin.SORT_METHOD_PLAYCOUNT, "Viewers")
+    xbmcplugin.addSortMethod(PLUGIN_ID, xbmcplugin.SORT_METHOD_LABEL)
     xbmcplugin.addDirectoryItems(PLUGIN_ID, items)
     xbmcplugin.endOfDirectory(PLUGIN_ID)
 
