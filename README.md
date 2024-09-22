@@ -1,4 +1,5 @@
 # plugin.video.cb20
+
 A kodi plugin for streaming cams from chaturbate.com. Works with all kodi v20 and v21 releases.
 
 Tested on Android (Fire TV) and Windows, should work fine with other Linux systems. Not available in a kodi repository, so use "Install from ZIP" in kodi and point to the zip file to install (Allow install from unknown source under Settings > System > Add-ons Unknown sources).
