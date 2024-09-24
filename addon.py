@@ -237,7 +237,7 @@ def get_favourites():
         url = sys.argv[0] + '?playactor=' + item
         li = xbmcgui.ListItem(item)
         li.setLabel(item)
-        li.setArt({'icon': THUMB_WIDE.format(item)})
+        li.setArt({'icon': THUMB_SQUARE.format(item), 'thumb': THUMB_SQUARE.format(item)})
 
         # Context menu
         commands = []
@@ -342,7 +342,7 @@ def get_roomlist():
                 # Extract num_users count for playcounter
                 s = room.get('num_users', 0)
                 li.setLabel(room.get('username'))
-                li.setArt({'icon': room.get('img')})
+                li.setArt({'icon': room.get('img'), 'thumb': room.get('img'), 'poster': room.get('img')})
                 vit.setSortTitle(str(id).zfill(2) + " - " + room.get('username'))
                 id = id + 1
                 vit.setPlot("Age: " + str(room.get('display_age', "-"))
@@ -384,7 +384,7 @@ def get_roomlist():
             li = xbmcgui.ListItem(f"Page {page + 1} of {total_pages}")
             vit = li.getVideoInfoTag()
             
-            li.setArt({'icon': 'DefaultFolder.png'})
+            li.setArt({'icon': 'DefaultFolder.png', 'thumb': 'DefaultFolder.png', 'poster': 'DefaultFolder.png'})
             vit.setSortTitle(str(999).zfill(2) + " - Next Page")
             vit.setPlaycount(-1)
             
@@ -452,7 +452,7 @@ def get_tag_list():
                 next_url = "taglist&genders=" + genders + "&page=" + str(int(page)+1)
                 li = xbmcgui.ListItem("Next page (%s of %s)" % (str(int(page)+1),str(totalPages)))
                 vit = li.getVideoInfoTag()
-                li.setArt({'icon': 'DefaultFolder.png'})
+                li.setArt({'icon': 'DefaultFolder.png', 'thumb': 'DefaultFolder.png', 'poster': 'DefaultFolder.png'})
                 vit.setSortTitle(str(id).zfill(2) + " - Next Page")
                 vit.setPlaycount(-1)
                 
@@ -572,7 +572,7 @@ def play_actor(actor, genre=[""]):
         tag.setGenres(genre)
         tag.setPlot(plot)
         # Thumbnail for OSD (Square)
-        li.setArt({'icon': THUMB_SQUARE.format(actor)})
+        li.setArt({'icon': THUMB_SQUARE.format(actor), 'thumb': THUMB_SQUARE.format(actor), 'poster': THUMB_SQUARE.format(actor)})
         li.setMimeType('application/vnd.apple.mpegstream_url')
         # Get stream player setting
         stream_player = xbmcaddon.Addon().getSetting('stream_player')
@@ -670,7 +670,7 @@ def search_actor():
             
             # List item info and art
             tag.setPlot(plot)
-            li.setArt({'icon': THUMB_SQUARE.format(s)})
+            li.setArt({'icon': THUMB_SQUARE.format(s), 'thumb': THUMB_SQUARE.format(s), 'poster': THUMB_SQUARE.format(s)})
 
             # Put items to virtual directory listing
             url = sys.argv[0] + '?playactor=' + s
