@@ -14,8 +14,8 @@ DB_TEXTURES = xbmcvfs.translatePath("special://userdata/Database/Textures13.db")
 PATH_THUMBS = xbmcvfs.translatePath("special://userdata/Thumbnails/")
 
 # Queries
-Q_THUMBNAILS = "SELECT url,cachedurl FROM texture WHERE url LIKE '%.highwebmedia.com%'"
-Q_DEL_THUMBNAILS = "DELETE FROM texture WHERE url LIKE '%.highwebmedia.com%'"
+Q_THUMBNAILS = "SELECT url,cachedurl FROM texture WHERE url LIKE '%thumb.live.mmcdn.com%'"
+Q_DEL_THUMBNAILS = "DELETE FROM texture WHERE url LIKE '%thumb.live.mmcdn.com%'"
 
 # xbmc.log(ADDON_NAME + ": " + str(sys.argv), 1)
 
@@ -23,14 +23,14 @@ def clean_database():
     conn = sqlite3.connect(xbmcvfs.translatePath("special://database/Textures13.db"))
     try:
         with conn:
-            list = conn.execute("SELECT id, cachedurl FROM texture WHERE url LIKE '%%%s%%';" % ".highwebmedia.com")
+            list = conn.execute("SELECT id, cachedurl FROM texture WHERE url LIKE '%%%s%%';" % ".thumb.live.mmcdn.com")
             for row in list:
                 conn.execute("DELETE FROM sizes WHERE idtexture LIKE '%s';" % row[0])
                 try:
                     os.remove(xbmcvfs.translatePath("special://thumbnails/" + row[1]))
                 except:
                     pass
-            conn.execute("DELETE FROM texture WHERE url LIKE '%%%s%%';" % ".highwebmedia.com")
+            conn.execute("DELETE FROM texture WHERE url LIKE '%%%s%%';" % ".thumb.live.mmcdn.com")
             xbmcgui.Dialog().notification('Done', 'Database and thumbnails cleaned up!')
     except:
         pass

@@ -25,17 +25,16 @@ DB_TEXTURES = xbmcvfs.translatePath("special://userdata/Database/Textures13.db")
 PATH_THUMBS = xbmcvfs.translatePath("special://userdata/Thumbnails/")
 
 # Queries
-Q_THUMBNAILS = "SELECT url,cachedurl FROM texture WHERE url LIKE '%.highwebmedia.com%'"
-Q_DEL_THUMBNAILS = "DELETE FROM texture WHERE url LIKE '%.highwebmedia.com%'"
+Q_THUMBNAILS = "SELECT url,cachedurl FROM texture WHERE url LIKE '%thumb.live.mmcdn.com%'"
+Q_DEL_THUMBNAILS = "DELETE FROM texture WHERE url LIKE '%thumb.live.mmcdn.com%'"
 
 # Addon init
 PLUGIN_ID = int(sys.argv[1])
 ADDON = xbmcaddon.Addon(id=ADDON_NAME)
 
 # Thumbnail URL constants
-THUMB_WIDE    = "https://roomimg.stream.highwebmedia.com/riw/{0}.jpg"
-THUMB_SQUARE  = "https://roomimg.stream.highwebmedia.com/ri/{0}.jpg"
-THUMB_HIRES   = "https://cbjpeg.stream.highwebmedia.com/stream?room={0}"
+THUMB_WIDE    = "https://thumb.live.mmcdn.com/riw/{0}.jpg"
+THUMB_SQUARE  = "https://thumb.live.mmcdn.com/ri/{0}.jpg"
 
 # Headers
 REQUEST_HEADERS = {
