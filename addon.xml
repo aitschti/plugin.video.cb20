@@ -4,6 +4,7 @@
         <import addon="xbmc.python" version="3.0.0"/>
         <!-- Other dependencies -->
         <import addon="inputstream.ffmpegdirect" version="20.0.0"/>
+        <import addon="inputstream.adaptive" version="21.5.14"/>
     </requires>
     <extension point="xbmc.python.pluginsource" library="addon.py">
         <provides>video</provides>

@@ -587,6 +587,9 @@ def play_actor(actor, genre=[""]):
         if stream_player == "1":
             li.setProperty('inputstream', 'inputstream.ffmpegdirect')
             xbmc.log(ADDON_SHORTNAME + ": " + "Using InputStream FFmpegDirect", 1)
+        if stream_player == "2":
+            li.setProperty('inputstream', 'inputstream.adaptive')
+            xbmc.log(ADDON_SHORTNAME + ": " + "Using InputStream Adaptive", 1)
         # Play stream
         xbmc.Player().play(hls_source, li)
     
