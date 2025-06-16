@@ -94,6 +94,13 @@ SITE_TOOLS = (("Backup Favourites", "tool=fav-backup", "Backup favourites (Set b
               ("Restore Favourites", "tool=fav-restore", "Restore your favourites from backup location."),
               ("Delete Thumbnails", "tool=thumbnails-delete", "Delete cached chaturbate related thumbnail files and database entries."))
 
+# Tuple for stream players (ID, Name, Inputstream Property)
+STREAM_PLAYERS = (
+    (0, "Default", None),
+    (1, "InputStream FFmpegDirect", "inputstream.ffmpegdirect"),
+    (2, "InputStream Adaptive", "inputstream.adaptive")
+)
+
 # Strings
 STRINGS = {
     'na' : 'User is not available',
@@ -578,15 +585,20 @@ def play_actor(actor, genre=[""]):
         tag.setPlot(plot)
         # Thumbnail for OSD (Square)
         li.setArt({'icon': THUMB_SQUARE.format(actor), 'thumb': THUMB_SQUARE.format(actor), 'poster': THUMB_SQUARE.format(actor)})
-        li.setMimeType('application/vnd.apple.mpegstream_url')
-        # Get stream player setting
-        stream_player = xbmcaddon.Addon().getSetting('stream_player')
-        # Set inputstream addon based on setting
-        if stream_player == "0":
-            xbmc.log(ADDON_SHORTNAME + ": " + "Using default stream player", 1)
-        if stream_player == "1":
-            li.setProperty('inputstream', 'inputstream.ffmpegdirect')
-            xbmc.log(ADDON_SHORTNAME + ": " + "Using InputStream FFmpegDirect", 1)
+        li.setMimeType('application/vnd.apple.mpegstream_url')        # Get stream player setting as integer
+        stream_player_id = int(xbmcaddon.Addon().getSetting('stream_player'))
+        
+        # Find selected player in STREAM_PLAYERS tuple
+        player_name = STREAM_PLAYERS[stream_player_id][1]
+        inputstream = STREAM_PLAYERS[stream_player_id][2]
+        
+        # Set inputstream property if specified
+        if inputstream:
+            li.setProperty('inputstream', inputstream)
+        
+        # Log which player is being used
+        xbmc.log(f"{ADDON_SHORTNAME}: Using {player_name}", 1)
+        
         # Play stream
         xbmc.Player().play(hls_source, li)
     

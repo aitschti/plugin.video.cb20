@@ -13,7 +13,7 @@
     </category>
     <category label="Cams">
         <setting id="cam_list_limit" type="enum" default="4" values="10|25|50|75|100" label="Max number of cams per page" />
-        <setting id="stream_player" type="enum" values="Default|InputStream FFmpegDirect" default="1" label="Stream player engine" />
+        <setting id="stream_player" type="enum" values="Default|InputStream FFmpegDirect|InputStream Adaptive" default="1" label="Stream player engine" />
     </category>
     <category label="Tags">
         <setting id="tag_sort_by" type="enum" default="1" values="Name|Rooms|Viewers" label="Filter tag list by name, room or viewer count" />
