@@ -38,9 +38,12 @@ THUMB_SQUARE  = "https://thumb.live.mmcdn.com/ri/{0}.jpg"
 
 # Headers
 REQUEST_HEADERS = {
-    'Referer': 'https://chaturbate.com',
+    'Referer': 'https://chaturbate.com/',
     'Origin': 'https://chaturbate.com',
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:118.0) Gecko/20100101 Firefox/118.0'
+    'User-Agent': ' Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/88.0.4324.182 Safari/537.36',
+    # Prefer JSON and allow compressed responses
+    'Accept': 'application/json, text/javascript, */*; q=0.01',
+    'Accept-Encoding': 'gzip, deflate'
 }
 
 # API endpoints
@@ -318,6 +321,9 @@ def get_roomlist():
                               from_age=from_age, 
                               to_age=to_age)
     
+    # Console log the URL
+    xbmc.log(ADDON_SHORTNAME + ": Fetching roomlist from URL: " + url, 1)
+    
     # Fetch the JSON data from the URL
     data = fetch_json_from_url(url, REQUEST_TIMEOUT)
     
@@ -593,32 +599,117 @@ def play_actor(actor, genre=[""]):
                 xbmcgui.Dialog().ok("Unknown error", "Something went wrong with info extraction.\nError: " + str(e))  
 
 def fetch_json_from_url(url, timeout):
-    """Fetch JSON from URL with timeout"""
-    
-    # Create a Request object with the URL and headers
-    req = urllib.request.Request(url, headers=REQUEST_HEADERS)
-    
+    """Streamlined fetch: cookie-aware opener, decompression, JSON check, save-on-failure."""
+
+    # Cookie-aware opener (graceful fallback)
     try:
-        # Perform the GET request with a timeout
-        with urllib.request.urlopen(req, timeout=timeout) as response:
-            # Read and decode the response
-            raw_data = response.read().decode()
-            
-            # Parse the JSON from the response
-            data = json.loads(raw_data)
-            
-            # Return the parsed JSON data
-            return data
-            
+        import http.cookiejar as cookiejar
+        cj = cookiejar.CookieJar()
+        opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(cj))
+    except Exception:
+        opener = urllib.request.build_opener()
+
+    headers = dict(REQUEST_HEADERS)
+    headers.setdefault('X-Requested-With', 'XMLHttpRequest')
+    req = urllib.request.Request(url, headers=headers)
+
+    def _save_response(raw_bytes, text, prefix):
+        rel = os.path.join('research_files', f"{prefix}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.html")
+        full = os.path.join(BASE_DIR, rel)
+        try:
+            os.makedirs(os.path.dirname(full), exist_ok=True)
+            with open(full, 'wb') as fh:
+                fh.write(raw_bytes if isinstance(raw_bytes, (bytes, bytearray)) else text.encode('utf-8', errors='replace'))
+            return full
+        except Exception as exc:
+            xbmc.log(f"{ADDON_SHORTNAME}: Failed saving {prefix} response - {repr(exc)}", level=xbmc.LOGERROR)
+            return None
+
+    try:
+        with opener.open(req, timeout=timeout) as resp:
+            status = None
+            try:
+                status = resp.getcode()
+            except Exception:
+                pass
+            content_type = (resp.headers.get('Content-Type') or '')
+
+            raw = resp.read()
+            # Decompress if needed
+            enc = (resp.headers.get('Content-Encoding') or '').lower()
+            if 'gzip' in enc:
+                try:
+                    import gzip
+                    raw = gzip.decompress(raw)
+                except Exception as exc:
+                    xbmc.log(f"{ADDON_SHORTNAME}: gzip decompress failed for {url} - {repr(exc)}", level=xbmc.LOGERROR)
+            elif 'deflate' in enc:
+                try:
+                    import zlib
+                    try:
+                        raw = zlib.decompress(raw)
+                    except zlib.error:
+                        raw = zlib.decompress(raw, -zlib.MAX_WBITS)
+                except Exception as exc:
+                    xbmc.log(f"{ADDON_SHORTNAME}: deflate decompress failed for {url} - {repr(exc)}", level=xbmc.LOGERROR)
+
+            charset = None
+            try:
+                charset = resp.headers.get_content_charset()
+            except Exception:
+                charset = None
+            charset = charset or 'utf-8'
+
+            text = raw.decode(charset, errors='replace')
+            if text.startswith('\ufeff'):
+                text = text.lstrip('\ufeff')
+
+            # If not JSON-ish, save and log
+            if not ('json' in content_type.lower() or text.lstrip().startswith('{') or text.lstrip().startswith('[')):
+                full = _save_response(raw, text, 'failing_response')
+                snippet = text[:500].replace('\n', ' ')
+                xbmc.log(f"{ADDON_SHORTNAME}: Non-JSON response for {url} (status={status}, ct={content_type}). Saved: {full}. Snippet: {snippet}", level=xbmc.LOGERROR)
+                return None
+
+            # Parse JSON
+            try:
+                return json.loads(text)
+            except json.JSONDecodeError as e:
+                # Try to recover by finding the JSON start
+                for ch in ('{', '['):
+                    i = text.find(ch)
+                    if i != -1:
+                        try:
+                            parsed = json.loads(text[i:])
+                            xbmc.log(f"{ADDON_SHORTNAME}: Recovered JSON from substring for {url} (idx={i})", level=xbmc.LOGNOTICE)
+                            return parsed
+                        except Exception:
+                            pass
+
+                full = _save_response(raw, text, 'failing_json')
+                snippet = text[:500].replace('\n', ' ')
+                ctx = text[max(0, e.pos - 80):e.pos + 80].replace('\n', ' ')
+                xbmc.log(f"{ADDON_SHORTNAME}: JSONDecodeError for {url} (status={status}) - {e.msg} at {e.pos}. Saved: {full}. Snippet: {snippet}", level=xbmc.LOGERROR)
+                xbmc.log(f"{ADDON_SHORTNAME}: JSON error context: {ctx}", level=xbmc.LOGERROR)
+                return None
+
     except urllib.error.HTTPError as e:
-        # HTTP errors (e.g., 404 or 501)
-        xbmc.log(ADDON_SHORTNAME + ": "f"HTTP Error: {e.code}", level=xbmc.LOGERROR)
-        return None  # Indicate failure by returning None
-        
+        body = None
+        try:
+            body = e.read().decode('utf-8', errors='replace')
+        except Exception:
+            body = None
+        body_snip = (body or '')[:500].replace('\n', ' ')
+        xbmc.log(f"{ADDON_SHORTNAME}: HTTPError {getattr(e,'code','?')} for {url}. Snippet: {body_snip}", level=xbmc.LOGERROR)
+        return None
+
     except urllib.error.URLError as e:
-        # Other errors (e.g., connection error, timeout)
-        xbmc.log(ADDON_SHORTNAME + ": " + f"An error occurred: {e.reason}", level=xbmc.LOGERROR)
-        return None  # Indicate failure by returning None
+        xbmc.log(f"{ADDON_SHORTNAME}: URLError for {url} - {getattr(e,'reason',e)}", level=xbmc.LOGERROR)
+        return None
+
+    except Exception as e:
+        xbmc.log(f"{ADDON_SHORTNAME}: Unexpected error fetching {url} - {repr(e)}", level=xbmc.LOGERROR)
+        return None
 
 def search_actor():
     """Search for actor/username and list item if username exists"""
