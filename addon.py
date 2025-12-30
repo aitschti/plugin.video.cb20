@@ -97,6 +97,13 @@ SITE_TOOLS = (("Backup Favourites", "tool=fav-backup", "Backup favourites (Set b
               ("Restore Favourites", "tool=fav-restore", "Restore your favourites from backup location."),
               ("Delete Thumbnails", "tool=thumbnails-delete", "Delete cached chaturbate related thumbnail files and database entries."))
 
+# Tuple for stream players (ID, Name, Inputstream Property)
+STREAM_PLAYERS = (
+    (0, "Default", None),
+    (1, "InputStream FFmpegDirect", "inputstream.ffmpegdirect"),
+    (2, "InputStream Adaptive", "inputstream.adaptive")
+)
+
 # Strings
 STRINGS = {
     'na' : 'User is not available',
@@ -181,13 +188,16 @@ def tool_fav_backup():
         xbmcgui.Dialog().ok("Backup Favourites", "Backup path is empty. Please set a valid path in settings menu under \"Favourites\" first.")  
         xbmcaddon.Addon(id=ADDON_NAME).openSettings()
     else:
-        if xbmcvfs.exists(source):
-            if xbmcvfs.copy(source, destination):
-                xbmcgui.Dialog().ok("Backup Favourites", "Backup of favourites to backup path succesful.")
+        # Ask for confirmation before backup
+        if xbmcgui.Dialog().yesno("Backup Favourites", "Do you really want to backup your favourites database?\nThis will overwrite any existing backup file.",
+                                  yeslabel="Yes, backup", nolabel="Cancel"):
+            if xbmcvfs.exists(source):
+                if xbmcvfs.copy(source, destination):
+                    xbmcgui.Dialog().ok("Backup Favourites", "Backup of favourites to backup path succesful.")
+                else:
+                    xbmcgui.Dialog().ok("Backup Favourites", "Something went wrong.")
             else:
-                xbmcgui.Dialog().ok("Backup Favourites", "Something went wrong.")
-        else:
-            xbmcgui.Dialog().ok("Backup Favourites", "Favourites file is empty. Nothing to backup.")
+                xbmcgui.Dialog().ok("Backup Favourites", "Favourites file is empty. Nothing to backup.")
 
 def tool_fav_restore():
     path = ADDON.getSetting('fav_path_backup')
@@ -199,10 +209,13 @@ def tool_fav_restore():
         xbmcaddon.Addon(id=ADDON_NAME).openSettings()
     else:
         if xbmcvfs.exists(source):
-            if xbmcvfs.copy(source, destination):
-                xbmcgui.Dialog().ok("Restore Favourites", "Restore of favourites succesful.")
-            else:
-                xbmcgui.Dialog().ok("Restore Favourites", "Something went wrong.")
+            # Ask for confirmation before restore
+            if xbmcgui.Dialog().yesno("Restore Favourites", "Do you really want to restore your favourites database?\nThis will overwrite your current favourites!", 
+                                      yeslabel="Yes, restore", nolabel="Cancel"):
+                if xbmcvfs.copy(source, destination):
+                    xbmcgui.Dialog().ok("Restore Favourites", "Restore of favourites succesful.")
+                else:
+                    xbmcgui.Dialog().ok("Restore Favourites", "Something went wrong.")
         else:
             xbmcgui.Dialog().ok("Restore Favourites", "No valid file found in restore location. Make a backup first or check location.")
 
@@ -578,15 +591,20 @@ def play_actor(actor, genre=[""]):
         tag.setPlot(plot)
         # Thumbnail for OSD (Square)
         li.setArt({'icon': THUMB_SQUARE.format(actor), 'thumb': THUMB_SQUARE.format(actor), 'poster': THUMB_SQUARE.format(actor)})
-        li.setMimeType('application/vnd.apple.mpegstream_url')
-        # Get stream player setting
-        stream_player = xbmcaddon.Addon().getSetting('stream_player')
-        # Set inputstream addon based on setting
-        if stream_player == "0":
-            xbmc.log(ADDON_SHORTNAME + ": " + "Using default stream player", 1)
-        if stream_player == "1":
-            li.setProperty('inputstream', 'inputstream.ffmpegdirect')
-            xbmc.log(ADDON_SHORTNAME + ": " + "Using InputStream FFmpegDirect", 1)
+        li.setMimeType('application/vnd.apple.mpegstream_url')        # Get stream player setting as integer
+        stream_player_id = int(xbmcaddon.Addon().getSetting('stream_player'))
+        
+        # Find selected player in STREAM_PLAYERS tuple
+        player_name = STREAM_PLAYERS[stream_player_id][1]
+        inputstream = STREAM_PLAYERS[stream_player_id][2]
+        
+        # Set inputstream property if specified
+        if inputstream:
+            li.setProperty('inputstream', inputstream)
+        
+        # Log which player is being used
+        xbmc.log(f"{ADDON_SHORTNAME}: Using {player_name}", 1)
+        
         # Play stream
         xbmc.Player().play(hls_source, li)
     
