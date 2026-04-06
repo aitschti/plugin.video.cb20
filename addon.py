@@ -10,6 +10,10 @@ import sqlite3
 import re
 import html
 import math
+import threading
+import socketserver
+import http.server
+import types
 import urllib.request
 import urllib.parse
 import urllib.error
@@ -40,7 +44,7 @@ THUMB_SQUARE  = "https://thumb.live.mmcdn.com/ri/{0}.jpg"
 REQUEST_HEADERS = {
     'Referer': 'https://chaturbate.com/',
     'Origin': 'https://chaturbate.com',
-    'User-Agent': ' Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/88.0.4324.182 Safari/537.36',
+    'User-Agent': ' Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.7680.178 Safari/537.36',
     # Prefer JSON and allow compressed responses
     'Accept': 'application/json, text/javascript, */*; q=0.01',
     'Accept-Encoding': 'gzip, deflate'
@@ -48,9 +52,9 @@ REQUEST_HEADERS = {
 
 # API endpoints
 API_ENDPOINT_BIO     = "https://chaturbate.com/api/biocontext/{0}/"
-API_ENDPOINT_VIDEO   = "https://chaturbate.com/api/chatvideocontext/{0}/"
 API_ENDPOINT_TAGLIST = "https://chaturbate.com/api/ts/hashtags/tag-table-data/?g={0}&page={1}&limit={2}&sort={3}"
 API_ENDPOINT_ROOMS   = "https://chaturbate.com/api/ts/roomlist/room-list/?enable_recommendations=false"
+HLS_EDGE_ENDPOINT    = "https://chaturbate.com/get_edge_hls_url_ajax/"
 
 # Site specific constants
 USER_STATES = {
@@ -97,13 +101,6 @@ SITE_TOOLS = (("Backup Favourites", "tool=fav-backup", "Backup favourites (Set b
               ("Restore Favourites", "tool=fav-restore", "Restore your favourites from backup location."),
               ("Delete Thumbnails", "tool=thumbnails-delete", "Delete cached chaturbate related thumbnail files and database entries."))
 
-# Tuple for stream players (ID, Name, Inputstream Property)
-STREAM_PLAYERS = (
-    (0, "Default", None),
-    (1, "InputStream FFmpegDirect", "inputstream.ffmpegdirect"),
-    (2, "InputStream Adaptive", "inputstream.adaptive")
-)
-
 # Strings
 STRINGS = {
     'na' : 'User is not available',
@@ -113,6 +110,128 @@ STRINGS = {
     'unknown_status' : 'Unkown status: ',
     'not_live' : 'User is not live at the moment'
 }
+
+# Local HLS manifest proxy
+#
+# CDN JWT token on llhls.m3u8 is single-use and fingerprint-validated.
+# FIRST Python urllib fetch succeeds; the token is then burned — any
+# subsequent fetch returns 403.
+#
+# Therefore:
+# - Pre-fetch manifest ONCE synchronously (Python urllib passes CDN
+#   fingerprint check).  Rewrite all relative URIs to absolute.
+# - Rewritten manifest to fixed temp file.
+# - Serve file from a localhost HTTP server.  Kodi's FFmpeg HLS demuxer sees
+#   a live HTTP URL and re-queries periodically; the proxy just returns the
+#   same master playlist each time (as it does not change). Variant/audio/
+#   segment URLs are absolute CDN URLs (session=UUID, no fingerprinting) 
+#   so FFmpeg fetches those directly.
+
+_PROXY_FILE = xbmcvfs.translatePath('special://temp/') + 'cb20_manifest.m3u8'
+_PROXY_STATE_KEY = 'plugin_video_cb20_proxy'
+
+
+def _get_proxy_state():
+    """Return the persistent proxy-state pseudo-module, creating it if absent."""
+    if _PROXY_STATE_KEY not in sys.modules:
+        s = types.ModuleType(_PROXY_STATE_KEY)
+        s.server = None # type: ignore
+        s.port = None # type: ignore
+        s.lock = threading.Lock() # type: ignore
+        sys.modules[_PROXY_STATE_KEY] = s
+    return sys.modules[_PROXY_STATE_KEY]
+
+
+class _ReuseAddrTCPServer(socketserver.TCPServer):
+    allow_reuse_address = True
+
+
+class _CBManifestHandler(http.server.BaseHTTPRequestHandler):
+    """Serve the pre-fetched manifest from the temp file on every request."""
+
+    def do_GET(self):
+        try:
+            with open(_PROXY_FILE, 'rb') as fh:
+                data = fh.read()
+        except Exception as e:
+            xbmc.log(f"CB20: proxy read failed: {repr(e)}", level=xbmc.LOGERROR)
+            self.send_error(503, 'No manifest available')
+            return
+        self.send_response(200)
+        self.send_header('Content-Type', 'application/vnd.apple.mpegurl')
+        self.send_header('Content-Length', str(len(data)))
+        self.send_header('Cache-Control', 'no-cache')
+        self.end_headers()
+        self.wfile.write(data)
+
+    def log_message(self, fmt, *args): # type: ignore
+        pass  # suppress HTTP access log spam
+
+
+def _start_proxy_server():
+    """Start (or reuse) the manifest proxy.  Returns the bound port, or None."""
+    state = _get_proxy_state()
+    with state.lock:
+        if state.server is not None:
+            xbmc.log(f"CB20: manifest proxy reused on 127.0.0.1:{state.port}", 1)
+            return state.port
+        # Scan a small port range so we're immune to orphaned old-code threads
+        # that may still hold port 34521 from a previous code version.
+        for port in range(34521, 34526):
+            try:
+                server = _ReuseAddrTCPServer(('127.0.0.1', port), _CBManifestHandler)
+                t = threading.Thread(target=server.serve_forever,
+                                     name='cb20-manifest-proxy')
+                t.daemon = True
+                t.start()
+                state.server = server # type: ignore
+                state.port = port # type: ignore
+                xbmc.log(f"CB20: manifest proxy started on 127.0.0.1:{port}", 1)
+                return port
+            except OSError:
+                continue  # port in use, try next
+        xbmc.log("CB20: proxy start failed — all ports 34521-34525 in use",
+                 level=xbmc.LOGERROR)
+        return None
+
+
+def _fetch_manifest_content(url):
+    """Fetch HLS master manifest from CDN once and rewrite all relative URIs."""
+    from urllib.parse import urljoin
+    req = urllib.request.Request(url, headers={
+        'User-Agent': ' Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.7680.178 Safari/537.36',
+        'Accept': '*/*',
+        'Accept-Language': 'en-US,en;q=0.9',
+        'Accept-Encoding': 'gzip, deflate',
+        'Referer': 'https://chaturbate.com/',
+        'Origin': 'https://chaturbate.com',
+    })
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            raw = resp.read()
+            if 'gzip' in (resp.headers.get('Content-Encoding') or '').lower():
+                import gzip
+                raw = gzip.decompress(raw)
+    except Exception as e:
+        xbmc.log(f"CB20: manifest fetch failed: {repr(e)}", level=xbmc.LOGERROR)
+        return None
+
+    content = raw.decode('utf-8', errors='replace')
+    lines = []
+    for line in content.splitlines():
+        s = line.strip()
+        if s and not s.startswith('#') and not s.startswith('http'):
+            lines.append(urljoin(url, s))
+        elif s.startswith('#'):
+            lines.append(re.sub(
+                r'URI="([^"]*)"',
+                lambda m: f'URI="{urljoin(url, m.group(1))}"'
+                          if not m.group(1).startswith('http') else m.group(0),
+                line
+            ))
+        else:
+            lines.append(line)
+    return '\n'.join(lines)
 
 def evaluate_request():
     """Evaluate what has been picked in Kodi"""
@@ -260,8 +379,8 @@ def get_favourites():
         commands.append(('[COLOR orange]' + ADDON_SHORTNAME + ' - Refresh thumbnails [/COLOR]','RunScript(' + ADDON_NAME + ', ' + str(sys.argv[1]) + ', ctx_thumbnails_delete)'))
         
         li.addContextMenuItems(commands, True)
-        
-        items.append((url, li, True))
+        li.setProperty('IsPlayable', 'true')
+        items.append((url, li, False))
 
     # Put items to virtual directory listing and set sortings
     xbmcplugin.setContent(int(sys.argv[1]), 'videos')
@@ -378,8 +497,8 @@ def get_roomlist():
                 commands.append(('[COLOR orange]' + ADDON_SHORTNAME + ' - Add as favourite [/COLOR]','RunScript(' + ADDON_NAME + ', ' + str(sys.argv[1]) + ', add_favourite, ' + room.get('username') + ')'))
                 commands.append(('[COLOR orange]' + ADDON_SHORTNAME + ' - Refresh thumbnails [/COLOR]','RunScript(' + ADDON_NAME + ', ' + str(sys.argv[1]) + ', ctx_thumbnails_delete)'))
                 li.addContextMenuItems(commands, True)
-                
-                items.append((url, li, True))
+                li.setProperty('IsPlayable', 'true')
+                items.append((url, li, False))
         except:
             if keywords:
                 xbmcgui.Dialog().ok(ADDON_SHORTNAME + " Fuzzy Search", "No cams found matching keywords.")
@@ -456,7 +575,7 @@ def get_tag_list():
             vit = li.getVideoInfoTag()
             li.setLabel(item["hashtag"] + " (%s)" %
                         item["room_count"])
-            vit.setPlaycount(int(item["room_count"]))
+            vit.setPlaycount(0)
             vit.setSortTitle(str(id).zfill(3) + " - " + item["hashtag"])
             items.append((url, li, True))
             id = id + 1
@@ -485,7 +604,6 @@ def get_tag_list():
     # Build kodi listems for virtual directory
     # Put items to virtual directory listing and set sortings
     xbmcplugin.addSortMethod(PLUGIN_ID, xbmcplugin.SORT_METHOD_VIDEO_SORT_TITLE)
-    xbmcplugin.addSortMethod(PLUGIN_ID, xbmcplugin.SORT_METHOD_PLAYCOUNT, "Viewers")
     xbmcplugin.addSortMethod(PLUGIN_ID, xbmcplugin.SORT_METHOD_LABEL)
     xbmcplugin.addDirectoryItems(PLUGIN_ID, items)
     xbmcplugin.endOfDirectory(PLUGIN_ID)
@@ -499,7 +617,7 @@ def get_bio_context_from_json(b):
     s = ""
     # follower_count (int) (Followers: )
     if "follower_count" in b:
-        s += " | Followers: " + str(b['follower_count'])
+        s += "Followers: " + str(b['follower_count'])
     # display_age (Age: )
     if "display_age" in b and not b['display_age'] == None:
         if "display_birthday" in b:
@@ -535,116 +653,87 @@ def get_bio_context_from_json(b):
     if "fan_club_cost" in b and not b['fan_club_cost'] == 0:
         s += " | Fan club price: " + str(b['fan_club_cost'])
         
-    # interested_in (Interested In:) (array 0-3 max) obsolete
     return s
-
-def get_actor_prices_from_json(v):
-    if "allow_private_shows" in v:
-        if "spy_private_show_price" in v and not v["spy_private_show_price"] == 0:
-            return " | Private: " + str(v['private_show_price']) + " (Spy: " + str(v['spy_private_show_price']) + ")"
-        else:
-            return " | Private: " + str(v['private_show_price'])
-    else:
-        return ""
 
 
 def play_actor(actor, genre=[""]):
     """Get playlist for actor/username and add m3u8 to kodi's playlist"""
-    
-    # Try to play actor
-    try:      
-        # Fetch Videocontext
-        url = API_ENDPOINT_VIDEO.format(actor)
-        v = json.loads(json.dumps(fetch_json_from_url(url, REQUEST_TIMEOUT)))
-        
-        # Fetch Biocontext
-        url = API_ENDPOINT_BIO.format(actor)
-        b = json.loads(json.dumps(fetch_json_from_url(url, REQUEST_TIMEOUT)))
-        
-        # Playlist
-        hls_source = v['hls_source']
-        # Room status
-        status = v['room_status']
-        # Viewers
-        viewers = v['num_viewers']
-        # Topic
-        topic = v['room_title']
-            
-        if not status == "public":
-            if status in USER_STATES_NICE:
-                xbmcgui.Dialog().ok(STRINGS['na'], STRINGS['status'] + USER_STATES_NICE[status] + "\n" + STRINGS['last_broadcast'] + b['time_since_last_broadcast'])  
-                return
-            # Unknown state
+
+    # Fetch HLS URL and room status
+    hls_source, room_status = get_hls_url(actor)
+
+    if room_status == 'not_found':
+        xbmcgui.Dialog().ok("User issue (404 error)", "Username does not exist anymore. If this message persists, this user is safe to delete.")
+        return
+
+    if room_status is None:
+        xbmcgui.Dialog().ok("Connection error", "Could not reach Chaturbate servers. Please try again.")
+        return
+
+    if room_status != 'public':
+        b = fetch_json_from_url(API_ENDPOINT_BIO.format(actor), REQUEST_TIMEOUT) or {}
+        last_broadcast = b.get('time_since_last_broadcast', 'unknown')
+        status_nice = USER_STATES_NICE.get(room_status, room_status)
+        xbmcgui.Dialog().ok(STRINGS['na'], STRINGS['status'] + status_nice + "\n" + STRINGS['last_broadcast'] + last_broadcast) # type: ignore
+        return
+
+    if not hls_source:
+        xbmcgui.Dialog().ok(STRINGS['na'], STRINGS['not_live'])
+        return
+
+    # Fetch bio metadata
+    b = fetch_json_from_url(API_ENDPOINT_BIO.format(actor), REQUEST_TIMEOUT) or {}
+
+    # Plot using bio data
+    plot = get_bio_context_from_json(b)
+
+    # Build kodi listitem for playlist
+    li = xbmcgui.ListItem(actor)
+    tag = li.getVideoInfoTag()
+    tag.setGenres(genre)
+    tag.setPlot(plot)
+    # Thumbnail for OSD (Square)
+    li.setArt({'icon': THUMB_SQUARE.format(actor), 'thumb': THUMB_SQUARE.format(actor), 'poster': THUMB_SQUARE.format(actor)})
+    li.setMimeType('application/vnd.apple.mpegurl')
+
+    # LL-HLS source needs special handling to work around CDN token issues, but other sources can be played directly.
+    if 'llhls' in hls_source:
+        content = _fetch_manifest_content(hls_source)
+        if content:
+            try:
+                with open(_PROXY_FILE, 'w', encoding='utf-8') as fh:
+                    fh.write(content)
+                xbmc.log(f"{ADDON_SHORTNAME}: manifest pre-fetched - {_PROXY_FILE}", 1)
+            except Exception as e:
+                xbmc.log(f"{ADDON_SHORTNAME}: manifest write failed: {repr(e)}",
+                         level=xbmc.LOGERROR)
+                content = None
+        if content:
+            proxy_port = _start_proxy_server()
+            if proxy_port:
+                play_url = f'http://127.0.0.1:{proxy_port}/cb20.m3u8'
+                li.setProperty('inputstream', 'inputstream.adaptive')
+                xbmc.log(f"{ADDON_SHORTNAME}: LL-HLS via inputstream.adaptive - {play_url}", 1)
             else:
-                xbmcgui.Dialog().ok(STRINGS['na'], STRINGS['unknown_status'] + status + "\n" + STRINGS['last_broadcast'] + b['time_since_last_broadcast'])  
-                return
-    
-        # Status is public at this point, continue
-        
-        # Combine plot
-        plot = topic + "\n\nViewers: " + str(viewers) + get_bio_context_from_json(b) + get_actor_prices_from_json(v)
-    
-        # Build kodi listem for playlist
-        li = xbmcgui.ListItem(actor)
-        tag = li.getVideoInfoTag()
-        tag.setGenres(genre)
-        tag.setPlot(plot)
-        # Thumbnail for OSD (Square)
-        li.setArt({'icon': THUMB_SQUARE.format(actor), 'thumb': THUMB_SQUARE.format(actor), 'poster': THUMB_SQUARE.format(actor)})
-        li.setMimeType('application/vnd.apple.mpegstream_url')        # Get stream player setting as integer
-        stream_player_id = int(xbmcaddon.Addon().getSetting('stream_player'))
-        
-        # Find selected player in STREAM_PLAYERS tuple
-        player_name = STREAM_PLAYERS[stream_player_id][1]
-        inputstream = STREAM_PLAYERS[stream_player_id][2]
-        
-        # Set inputstream property if specified
-        if inputstream:
-            li.setProperty('inputstream', inputstream)
-        
-        # Log which player is being used
-        xbmc.log(f"{ADDON_SHORTNAME}: Using {player_name}", 1)
-        
-        # Play stream
-        xbmc.Player().play(hls_source, li)
-    
-    except urllib.error.HTTPError as e:
-            # Actor does not exist, we got an HTTP 404 error
-            if str(e) == "HTTP Error 404: Not Found":
-                xbmcgui.Dialog().ok("User issue (404 error)", "Username does not exist anymore. If this message persists, this user is save to delete.")
-            # Something else went wrong
-            else:
-                xbmcgui.Dialog().ok("Unknown error", "Something went wrong with info extraction.\nError: " + str(e))  
+                play_url = hls_source  # all proxy ports busy, try direct
+        else:
+            play_url = hls_source  # manifest fetch failed, try direct
+    else:
+        li.setProperty('inputstream', 'inputstream.adaptive')
+        play_url = hls_source
+
+    li.setPath(play_url)
+    xbmcplugin.setResolvedUrl(PLUGIN_ID, True, li)
+
 
 def fetch_json_from_url(url, timeout):
-    """Streamlined fetch: cookie-aware opener, decompression, JSON check, save-on-failure."""
-
-    # Cookie-aware opener (graceful fallback)
-    try:
-        import http.cookiejar as cookiejar
-        cj = cookiejar.CookieJar()
-        opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(cj))
-    except Exception:
-        opener = urllib.request.build_opener()
-
+    """Fetch JSON from url, with decompression and error handling."""
     headers = dict(REQUEST_HEADERS)
     headers.setdefault('X-Requested-With', 'XMLHttpRequest')
     req = urllib.request.Request(url, headers=headers)
 
-    def _save_response(raw_bytes, text, prefix):
-        rel = os.path.join('research_files', f"{prefix}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.html")
-        full = os.path.join(BASE_DIR, rel)
-        try:
-            os.makedirs(os.path.dirname(full), exist_ok=True)
-            with open(full, 'wb') as fh:
-                fh.write(raw_bytes if isinstance(raw_bytes, (bytes, bytearray)) else text.encode('utf-8', errors='replace'))
-            return full
-        except Exception as exc:
-            xbmc.log(f"{ADDON_SHORTNAME}: Failed saving {prefix} response - {repr(exc)}", level=xbmc.LOGERROR)
-            return None
-
     try:
-        with opener.open(req, timeout=timeout) as resp:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
             status = None
             try:
                 status = resp.getcode()
@@ -682,11 +771,10 @@ def fetch_json_from_url(url, timeout):
             if text.startswith('\ufeff'):
                 text = text.lstrip('\ufeff')
 
-            # If not JSON-ish, save and log
+            # If not JSON-ish, log and bail
             if not ('json' in content_type.lower() or text.lstrip().startswith('{') or text.lstrip().startswith('[')):
-                full = _save_response(raw, text, 'failing_response')
                 snippet = text[:500].replace('\n', ' ')
-                xbmc.log(f"{ADDON_SHORTNAME}: Non-JSON response for {url} (status={status}, ct={content_type}). Saved: {full}. Snippet: {snippet}", level=xbmc.LOGERROR)
+                xbmc.log(f"{ADDON_SHORTNAME}: Non-JSON response for {url} (status={status}, ct={content_type}). Snippet: {snippet}", level=xbmc.LOGERROR)
                 return None
 
             # Parse JSON
@@ -704,10 +792,9 @@ def fetch_json_from_url(url, timeout):
                         except Exception:
                             pass
 
-                full = _save_response(raw, text, 'failing_json')
                 snippet = text[:500].replace('\n', ' ')
                 ctx = text[max(0, e.pos - 80):e.pos + 80].replace('\n', ' ')
-                xbmc.log(f"{ADDON_SHORTNAME}: JSONDecodeError for {url} (status={status}) - {e.msg} at {e.pos}. Saved: {full}. Snippet: {snippet}", level=xbmc.LOGERROR)
+                xbmc.log(f"{ADDON_SHORTNAME}: JSONDecodeError for {url} (status={status}) - {e.msg} at {e.pos}. Snippet: {snippet}", level=xbmc.LOGERROR)
                 xbmc.log(f"{ADDON_SHORTNAME}: JSON error context: {ctx}", level=xbmc.LOGERROR)
                 return None
 
@@ -717,7 +804,7 @@ def fetch_json_from_url(url, timeout):
             body = e.read().decode('utf-8', errors='replace')
         except Exception:
             body = None
-        body_snip = (body or '')[:500].replace('\n', ' ')
+        body_snip = (body or '')[:500].replace('\n', ' ').replace('\x00', '')
         xbmc.log(f"{ADDON_SHORTNAME}: HTTPError {getattr(e,'code','?')} for {url}. Snippet: {body_snip}", level=xbmc.LOGERROR)
         return None
 
@@ -736,59 +823,38 @@ def search_actor():
     if s == '':
         xbmcplugin.endOfDirectory(int(sys.argv[1]), succeeded=False)
     else:
-        # Grab search result
-        try:
-            # Fetch Videocontext
-            url = API_ENDPOINT_VIDEO.format(s)
-            xbmc.log("URL: " + str(url),1)
-            v = json.loads(json.dumps(fetch_json_from_url(url, REQUEST_TIMEOUT)))
-        
-            # Fetch Biocontext
-            url = API_ENDPOINT_BIO.format(s)
-            b = json.loads(json.dumps(fetch_json_from_url(url, REQUEST_TIMEOUT)))
-        
-            # Room status
-            status = v['room_status']
-            # Viewers
-            viewers = v['num_viewers']
-            # Topic
-            topic = v['room_title']
-        
-            # Build kodi listem for virtual directory
-            li = xbmcgui.ListItem(s)
+        _, room_status = get_hls_url(s)
 
-            # Context menu
-            commands = []
-            commands.append((ADDON_SHORTNAME + ' - Add user to favourites','RunScript(' + ADDON_NAME + ', ' + str(sys.argv[1]) + ', add_favourite, ' + s + ')'))
-            li.addContextMenuItems(commands, True)
-            tag = li.getVideoInfoTag()
-            
-            if status=="public":
-                li.setLabel(s)
-            else:
-                if status=="private":    
-                    li.setLabel(s + " | private")
-                if status=="hidden":
-                    li.setLabel(s + " | hidden")
-                if status=="offline":
-                    li.setLabel(s + " | offline")
-            
-            # Combine plot
-            plot = topic + "\n\nViewers: " + str(viewers) + get_bio_context_from_json(b) + get_actor_prices_from_json(v)
-            
-            # List item info and art
-            tag.setPlot(plot)
-            li.setArt({'icon': THUMB_SQUARE.format(s), 'thumb': THUMB_SQUARE.format(s), 'poster': THUMB_SQUARE.format(s)})
+        if room_status == 'not_found':
+            xbmcgui.Dialog().ok(ADDON_SHORTNAME, "Username does not exist. Please try again.")
+            xbmcplugin.endOfDirectory(int(sys.argv[1]), succeeded=False)
+            return
 
-            # Put items to virtual directory listing
-            url = sys.argv[0] + '?playactor=' + s
-            xbmcplugin.setContent(int(sys.argv[1]), 'videos')
-            xbmcplugin.addDirectoryItems(PLUGIN_ID, [(url, li, True)])
-            xbmcplugin.endOfDirectory(PLUGIN_ID)
+        if room_status is None:
+            xbmcgui.Dialog().ok(ADDON_SHORTNAME, "Could not reach Chaturbate servers. Please try again.")
+            xbmcplugin.endOfDirectory(int(sys.argv[1]), succeeded=False)
+            return
 
-        # Actor does not exist, we got an HTTP 404 error
-        except urllib.error.HTTPError as e:
-            xbmcgui.Dialog().ok(str(e), "Username does not exist. Please try again.")
+        b = fetch_json_from_url(API_ENDPOINT_BIO.format(s), REQUEST_TIMEOUT) or {}
+
+        li = xbmcgui.ListItem(s)
+        commands = []
+        commands.append((ADDON_SHORTNAME + ' - Add user to favourites', 'RunScript(' + ADDON_NAME + ', ' + str(sys.argv[1]) + ', add_favourite, ' + s + ')'))
+        li.addContextMenuItems(commands, True)
+        tag = li.getVideoInfoTag()
+
+        status_suffix = {'private': ' | private', 'hidden': ' | hidden', 'offline': ' | offline'}
+        li.setLabel(s + status_suffix.get(room_status, ''))
+
+        plot = s + "\n\n" + get_bio_context_from_json(b)
+        tag.setPlot(plot)
+        li.setArt({'icon': THUMB_SQUARE.format(s), 'thumb': THUMB_SQUARE.format(s), 'poster': THUMB_SQUARE.format(s)})
+
+        url = sys.argv[0] + '?playactor=' + s
+        li.setProperty('IsPlayable', 'true')
+        xbmcplugin.setContent(int(sys.argv[1]), 'videos')
+        xbmcplugin.addDirectoryItems(PLUGIN_ID, [(url, li, False)])
+        xbmcplugin.endOfDirectory(PLUGIN_ID)
 
 def search_actor2():
     """Fuzzy Search for actor/username and list item if username is online"""
@@ -885,6 +951,65 @@ def filter_and_unescape_html(input_str):
     filtered_str = re.sub(r'<a .*?>(.*?)<\/a>', r'\1', input_str)
     # convert HTML-entities in readable text
     return html.unescape(filtered_str)
+
+def get_hls_url(actor):
+    """
+    Fetch HLS stream URL via POST to get_edge_hls_url_ajax.
+    Returns (url, room_status) or (None, None) on failure.
+    room_status 'not_found' signals HTTP 404.
+    """
+    post_data = urllib.parse.urlencode({'room_slug': actor, 'bandwidth': 'high'}).encode('utf-8')
+    headers = {
+        'X-Requested-With': 'XMLHttpRequest',
+        'Accept': 'application/json, text/plain, */*',
+        'Content-Type': 'application/x-www-form-urlencoded',
+        'Referer': 'https://chaturbate.com/',
+        'Origin': 'https://chaturbate.com',
+        'User-Agent': REQUEST_HEADERS['User-Agent'],
+    }
+
+    endpoint = HLS_EDGE_ENDPOINT
+    try:
+        req = urllib.request.Request(endpoint, data=post_data, headers=headers)
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            raw = resp.read()
+            enc = (resp.headers.get('Content-Encoding') or '').lower()
+            if 'gzip' in enc:
+                import gzip
+                raw = gzip.decompress(raw)
+            elif 'deflate' in enc:
+                import zlib
+                try:
+                    raw = zlib.decompress(raw)
+                except zlib.error:
+                    raw = zlib.decompress(raw, -zlib.MAX_WBITS)
+
+            data = json.loads(raw.decode('utf-8', errors='replace').lstrip('\ufeff'))
+            room_status = data.get('room_status', '')
+            url         = data.get('url', '')
+            cmaf_edge   = data.get('cmaf_edge', False)
+
+            if cmaf_edge and url:
+                url = build_cmaf_url(url)
+
+            xbmc.log(f"{ADDON_SHORTNAME}: HLS OK: status={room_status}, cmaf={cmaf_edge}", 1)
+            return url, room_status
+
+    except urllib.error.HTTPError as e:
+        if e.code == 404:
+            xbmc.log(f"{ADDON_SHORTNAME}: HLS 404 — user not found: {actor}", level=xbmc.LOGWARNING)
+            return None, 'not_found'
+        xbmc.log(f"{ADDON_SHORTNAME}: HLS HTTP {e.code} for {endpoint}", level=xbmc.LOGERROR)
+
+    except Exception as e:
+        xbmc.log(f"{ADDON_SHORTNAME}: HLS error for {endpoint}: {repr(e)}", level=xbmc.LOGERROR)
+
+    return None, None
+
+def build_cmaf_url(url):
+    url = url.replace("playlist.m3u8", "playlist_sfm4s.m3u8")
+    url = re.sub(r'live-.+amlst', 'live-c-fhls/amlst', url)
+    return url
 
 def build_api_url_rooms(**kwargs):
     url = API_ENDPOINT_ROOMS
