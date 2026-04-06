@@ -127,8 +127,8 @@ STRINGS = {
 #   segment URLs are absolute CDN URLs (session=UUID, no fingerprinting) 
 #   so FFmpeg fetches those directly.
 
-_PROXY_FILE = xbmcvfs.translatePath('special://temp/') + 'cb20_manifest.m3u8'
-_PROXY_STATE_KEY = 'plugin_video_cb20_proxy'
+_PROXY_FILE = xbmcvfs.translatePath('special://temp/') + f'{ADDON_SHORTNAME}_manifest.m3u8'
+_PROXY_STATE_KEY = f'plugin_video_{ADDON_SHORTNAME}_proxy'
 
 
 def _get_proxy_state():
@@ -136,10 +136,55 @@ def _get_proxy_state():
     if _PROXY_STATE_KEY not in sys.modules:
         s = types.ModuleType(_PROXY_STATE_KEY)
         s.server = None # type: ignore
+        s.thread = None # type: ignore
         s.port = None # type: ignore
-        s.lock = threading.Lock() # type: ignore
+        s.monitor_thread = None # type: ignore
+        s.lock = threading.RLock() # type: ignore
         sys.modules[_PROXY_STATE_KEY] = s
     return sys.modules[_PROXY_STATE_KEY]
+
+
+def _proxy_server_is_running(state):
+    return (
+        getattr(state, 'server', None) is not None
+        and getattr(state, 'thread', None) is not None
+        and state.thread.is_alive()
+    )
+
+
+def _reset_proxy_state(state):
+    state.server = None # type: ignore
+    state.thread = None # type: ignore
+    state.port = None # type: ignore
+    state.monitor_thread = None # type: ignore
+
+
+def _stop_proxy_server():
+    state = _get_proxy_state()
+    with state.lock:
+        if state.server is None:
+            _reset_proxy_state(state)
+            return
+
+        if _proxy_server_is_running(state):
+            try:
+                state.server.shutdown()
+            except Exception as e:
+                xbmc.log(f"{ADDON_SHORTNAME}: proxy shutdown failed: {repr(e)}", level=xbmc.LOGWARNING)
+
+        try:
+            state.server.server_close()
+        except Exception as e:
+            xbmc.log(f"{ADDON_SHORTNAME}: proxy close failed: {repr(e)}", level=xbmc.LOGWARNING)
+
+        if getattr(state, 'thread', None) is not None and state.thread.is_alive():
+            try:
+                state.thread.join(timeout=2)
+            except Exception:
+                pass
+
+        _reset_proxy_state(state)
+        xbmc.log(f"{ADDON_SHORTNAME}: manifest proxy stopped", 1)
 
 
 class _ReuseAddrTCPServer(socketserver.TCPServer):
@@ -154,7 +199,7 @@ class _CBManifestHandler(http.server.BaseHTTPRequestHandler):
             with open(_PROXY_FILE, 'rb') as fh:
                 data = fh.read()
         except Exception as e:
-            xbmc.log(f"CB20: proxy read failed: {repr(e)}", level=xbmc.LOGERROR)
+            xbmc.log(f"{ADDON_SHORTNAME}: proxy read failed: {repr(e)}", level=xbmc.LOGERROR)
             self.send_error(503, 'No manifest available')
             return
         self.send_response(200)
@@ -168,29 +213,61 @@ class _CBManifestHandler(http.server.BaseHTTPRequestHandler):
         pass  # suppress HTTP access log spam
 
 
+def _proxy_monitor_loop():
+    """Background monitor that stops the proxy as soon as Kodi requests abort."""
+    try:
+        monitor = xbmc.Monitor()
+        while not monitor.abortRequested():
+            if monitor.waitForAbort(1000):
+                break
+    except Exception as e:
+        xbmc.log(f"{ADDON_SHORTNAME}: proxy monitor failed: {repr(e)}", level=xbmc.LOGWARNING)
+    finally:
+        _stop_proxy_server()
+
+
+def _start_proxy_monitor():
+    state = _get_proxy_state()
+    with state.lock:
+        if getattr(state, 'monitor_thread', None) is not None and state.monitor_thread.is_alive():
+            return
+        t = threading.Thread(target=_proxy_monitor_loop, name=f'{ADDON_SHORTNAME}-proxy-monitor')
+        t.daemon = True
+        t.start()
+        state.monitor_thread = t # type: ignore
+
+
 def _start_proxy_server():
     """Start (or reuse) the manifest proxy.  Returns the bound port, or None."""
     state = _get_proxy_state()
     with state.lock:
-        if state.server is not None:
-            xbmc.log(f"CB20: manifest proxy reused on 127.0.0.1:{state.port}", 1)
+        if _proxy_server_is_running(state):
+            xbmc.log(f"{ADDON_SHORTNAME}: manifest proxy reused on 127.0.0.1:{state.port}", 1)
             return state.port
+
+        if state.server is not None:
+            xbmc.log(f"{ADDON_SHORTNAME}: cleaning stale proxy state before starting new proxy", 1)
+            _stop_proxy_server()
+
+        _start_proxy_monitor()
+
         # Scan a small port range so we're immune to orphaned old-code threads
         # that may still hold port 34521 from a previous code version.
         for port in range(34521, 34526):
             try:
                 server = _ReuseAddrTCPServer(('127.0.0.1', port), _CBManifestHandler)
                 t = threading.Thread(target=server.serve_forever,
-                                     name='cb20-manifest-proxy')
+                                     name=f'{ADDON_SHORTNAME}-manifest-proxy')
                 t.daemon = True
                 t.start()
                 state.server = server # type: ignore
+                state.thread = t # type: ignore
                 state.port = port # type: ignore
-                xbmc.log(f"CB20: manifest proxy started on 127.0.0.1:{port}", 1)
+                xbmc.log(f"{ADDON_SHORTNAME}: manifest proxy started on 127.0.0.1:{port}", 1)
                 return port
             except OSError:
                 continue  # port in use, try next
-        xbmc.log("CB20: proxy start failed — all ports 34521-34525 in use",
+        xbmc.log(f"{ADDON_SHORTNAME}: proxy start failed — all ports 34521-34525 in use",
                  level=xbmc.LOGERROR)
         return None
 
@@ -213,7 +290,7 @@ def _fetch_manifest_content(url):
                 import gzip
                 raw = gzip.decompress(raw)
     except Exception as e:
-        xbmc.log(f"CB20: manifest fetch failed: {repr(e)}", level=xbmc.LOGERROR)
+        xbmc.log(f"{ADDON_SHORTNAME}: manifest fetch failed: {repr(e)}", level=xbmc.LOGERROR)
         return None
 
     content = raw.decode('utf-8', errors='replace')
@@ -709,9 +786,10 @@ def play_actor(actor, genre=[""]):
                          level=xbmc.LOGERROR)
                 content = None
         if content:
+            _stop_proxy_server()
             proxy_port = _start_proxy_server()
             if proxy_port:
-                play_url = f'http://127.0.0.1:{proxy_port}/cb20.m3u8'
+                play_url = f'http://127.0.0.1:{proxy_port}/{ADDON_SHORTNAME}.m3u8'
                 li.setProperty('inputstream', 'inputstream.adaptive')
                 xbmc.log(f"{ADDON_SHORTNAME}: LL-HLS via inputstream.adaptive - {play_url}", 1)
             else:
@@ -719,6 +797,7 @@ def play_actor(actor, genre=[""]):
         else:
             play_url = hls_source  # manifest fetch failed, try direct
     else:
+        _stop_proxy_server()
         li.setProperty('inputstream', 'inputstream.adaptive')
         play_url = hls_source
 
