@@ -10,7 +10,7 @@ Tested on Android (Fire TV) and Windows, should work fine with other Linux syste
 - Pagination for listings (set cams per page and type of listing in settings)
 - Search for cam (exact name and fuzzy search)
 - Favourites list (with backup/restore function. Set path in settings first!)
-- When streaming a cam use info button for additional info about the room like topic, goal, viewers etc. (if available)
+- When streaming a cam use info button for additional info about the room.
 
 ## Recommended settings
 
