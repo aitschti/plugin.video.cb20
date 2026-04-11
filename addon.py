@@ -10,10 +10,7 @@ import sqlite3
 import re
 import html
 import math
-import threading
-import socketserver
-import http.server
-import types
+import socket
 import urllib.request
 import urllib.parse
 import urllib.error
@@ -42,12 +39,12 @@ THUMB_SQUARE  = "https://thumb.live.mmcdn.com/ri/{0}.jpg"
 
 # Headers
 REQUEST_HEADERS = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.7680.178 Safari/537.36',
     'Referer': 'https://chaturbate.com/',
     'Origin': 'https://chaturbate.com',
-    'User-Agent': ' Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.7680.178 Safari/537.36',
-    # Prefer JSON and allow compressed responses
     'Accept': 'application/json, text/javascript, */*; q=0.01',
-    'Accept-Encoding': 'gzip, deflate'
+    'Accept-Language': 'en-US,en;q=0.9',
+    'Accept-Encoding': 'gzip, deflate',
 }
 
 # API endpoints
@@ -111,178 +108,67 @@ STRINGS = {
     'not_live' : 'User is not live at the moment'
 }
 
-# Local HLS manifest proxy
+# LL-HLS manifest handling
 #
 # CDN JWT token on llhls.m3u8 is single-use and fingerprint-validated.
-# FIRST Python urllib fetch succeeds; the token is then burned — any
-# subsequent fetch returns 403.
+# The first Python urllib fetch succeeds; the token is then burned — any
+# subsequent fetch (e.g. by inputstream.adaptive) returns 403.
 #
-# Therefore:
-# - Pre-fetch manifest ONCE synchronously (Python urllib passes CDN
-#   fingerprint check).  Rewrite all relative URIs to absolute.
-# - Rewritten manifest to fixed temp file.
-# - Serve file from a localhost HTTP server.  Kodi's FFmpeg HLS demuxer sees
-#   a live HTTP URL and re-queries periodically; the proxy just returns the
-#   same master playlist each time (as it does not change). Variant/audio/
-#   segment URLs are absolute CDN URLs (session=UUID, no fingerprinting) 
-#   so FFmpeg fetches those directly.
-
-_PROXY_FILE = xbmcvfs.translatePath('special://temp/') + f'{ADDON_SHORTNAME}_manifest.m3u8'
-_PROXY_STATE_KEY = f'plugin_video_{ADDON_SHORTNAME}_proxy'
+# Solution: pre-fetch the manifest ourselves, rewrite URIs to absolute,
+# then serve it once via a one-shot localhost HTTP server that shuts itself
+# down immediately after serving one request. No lingering threads.
 
 
-def _get_proxy_state():
-    """Return the persistent proxy-state pseudo-module, creating it if absent."""
-    if _PROXY_STATE_KEY not in sys.modules:
-        s = types.ModuleType(_PROXY_STATE_KEY)
-        s.server = None # type: ignore
-        s.thread = None # type: ignore
-        s.port = None # type: ignore
-        s.monitor_thread = None # type: ignore
-        s.lock = threading.RLock() # type: ignore
-        sys.modules[_PROXY_STATE_KEY] = s
-    return sys.modules[_PROXY_STATE_KEY]
-
-
-def _proxy_server_is_running(state):
-    return (
-        getattr(state, 'server', None) is not None
-        and getattr(state, 'thread', None) is not None
-        and state.thread.is_alive()
-    )
-
-
-def _reset_proxy_state(state):
-    state.server = None # type: ignore
-    state.thread = None # type: ignore
-    state.port = None # type: ignore
-    state.monitor_thread = None # type: ignore
-
-
-def _stop_proxy_server():
-    state = _get_proxy_state()
-    with state.lock:
-        if state.server is None:
-            _reset_proxy_state(state)
-            return
-
-        if _proxy_server_is_running(state):
-            try:
-                state.server.shutdown()
-            except Exception as e:
-                xbmc.log(f"{ADDON_SHORTNAME}: proxy shutdown failed: {repr(e)}", level=xbmc.LOGWARNING)
-
+def _bind_manifest_socket():
+    """Bind a listening socket on a free port. Returns (socket, url) or (None, None)."""
+    for port in range(34521, 34526):
+        srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         try:
-            state.server.server_close()
-        except Exception as e:
-            xbmc.log(f"{ADDON_SHORTNAME}: proxy close failed: {repr(e)}", level=xbmc.LOGWARNING)
+            srv.bind(('127.0.0.1', port))
+            srv.listen(4)
+            srv.settimeout(5)
+            xbmc.log(f"{ADDON_SHORTNAME}: manifest socket bound on 127.0.0.1:{port}", 1)
+            return srv, f'http://127.0.0.1:{port}/{ADDON_SHORTNAME}_manifest.m3u8'
+        except OSError:
+            srv.close()
+    xbmc.log(f"{ADDON_SHORTNAME}: manifest socket bind failed — all ports 34521-34525 in use",
+             level=xbmc.LOGERROR)
+    return None, None
 
-        if getattr(state, 'thread', None) is not None and state.thread.is_alive():
+
+def _serve_manifest_once(srv_sock, content):
+    """Serve manifest to every inbound connection until a 5-second idle silence."""
+    response = (
+        b'HTTP/1.1 200 OK\r\n'
+        b'Content-Type: application/vnd.apple.mpegurl\r\n'
+        b'Content-Length: ' + str(len(content)).encode() + b'\r\n'
+        b'Cache-Control: no-cache\r\n'
+        b'Connection: close\r\n'
+        b'\r\n'
+        + content.encode('utf-8')
+    )
+    try:
+        while True:
             try:
-                state.thread.join(timeout=2)
+                conn, _ = srv_sock.accept()
+            except socket.timeout:
+                break
+            try:
+                conn.settimeout(5)
+                conn.recv(4096)  # drain request headers
+                conn.sendall(response)
             except Exception:
                 pass
-
-        _reset_proxy_state(state)
-        xbmc.log(f"{ADDON_SHORTNAME}: manifest proxy stopped", 1)
-
-
-class _ReuseAddrTCPServer(socketserver.TCPServer):
-    allow_reuse_address = True
-
-
-class _CBManifestHandler(http.server.BaseHTTPRequestHandler):
-    """Serve the pre-fetched manifest from the temp file on every request."""
-
-    def do_GET(self):
-        try:
-            with open(_PROXY_FILE, 'rb') as fh:
-                data = fh.read()
-        except Exception as e:
-            xbmc.log(f"{ADDON_SHORTNAME}: proxy read failed: {repr(e)}", level=xbmc.LOGERROR)
-            self.send_error(503, 'No manifest available')
-            return
-        self.send_response(200)
-        self.send_header('Content-Type', 'application/vnd.apple.mpegurl')
-        self.send_header('Content-Length', str(len(data)))
-        self.send_header('Cache-Control', 'no-cache')
-        self.end_headers()
-        self.wfile.write(data)
-
-    def log_message(self, fmt, *args): # type: ignore
-        pass  # suppress HTTP access log spam
-
-
-def _proxy_monitor_loop():
-    """Background monitor that stops the proxy as soon as Kodi requests abort."""
-    try:
-        monitor = xbmc.Monitor()
-        while not monitor.abortRequested():
-            if monitor.waitForAbort(1000):
-                break
-    except Exception as e:
-        xbmc.log(f"{ADDON_SHORTNAME}: proxy monitor failed: {repr(e)}", level=xbmc.LOGWARNING)
+            finally:
+                conn.close()
     finally:
-        _stop_proxy_server()
-
-
-def _start_proxy_monitor():
-    state = _get_proxy_state()
-    with state.lock:
-        if getattr(state, 'monitor_thread', None) is not None and state.monitor_thread.is_alive():
-            return
-        t = threading.Thread(target=_proxy_monitor_loop, name=f'{ADDON_SHORTNAME}-proxy-monitor')
-        t.daemon = True
-        t.start()
-        state.monitor_thread = t # type: ignore
-
-
-def _start_proxy_server():
-    """Start (or reuse) the manifest proxy.  Returns the bound port, or None."""
-    state = _get_proxy_state()
-    with state.lock:
-        if _proxy_server_is_running(state):
-            xbmc.log(f"{ADDON_SHORTNAME}: manifest proxy reused on 127.0.0.1:{state.port}", 1)
-            return state.port
-
-        if state.server is not None:
-            xbmc.log(f"{ADDON_SHORTNAME}: cleaning stale proxy state before starting new proxy", 1)
-            _stop_proxy_server()
-
-        _start_proxy_monitor()
-
-        # Scan a small port range so we're immune to orphaned old-code threads
-        # that may still hold port 34521 from a previous code version.
-        for port in range(34521, 34526):
-            try:
-                server = _ReuseAddrTCPServer(('127.0.0.1', port), _CBManifestHandler)
-                t = threading.Thread(target=server.serve_forever,
-                                     name=f'{ADDON_SHORTNAME}-manifest-proxy')
-                t.daemon = True
-                t.start()
-                state.server = server # type: ignore
-                state.thread = t # type: ignore
-                state.port = port # type: ignore
-                xbmc.log(f"{ADDON_SHORTNAME}: manifest proxy started on 127.0.0.1:{port}", 1)
-                return port
-            except OSError:
-                continue  # port in use, try next
-        xbmc.log(f"{ADDON_SHORTNAME}: proxy start failed — all ports 34521-34525 in use",
-                 level=xbmc.LOGERROR)
-        return None
+        srv_sock.close()
 
 
 def _fetch_manifest_content(url):
-    """Fetch HLS master manifest from CDN once and rewrite all relative URIs."""
+    """Fetch LL-HLS master manifest and rewrite all relative URIs to absolute."""
     from urllib.parse import urljoin
-    req = urllib.request.Request(url, headers={
-        'User-Agent': ' Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.7680.178 Safari/537.36',
-        'Accept': '*/*',
-        'Accept-Language': 'en-US,en;q=0.9',
-        'Accept-Encoding': 'gzip, deflate',
-        'Referer': 'https://chaturbate.com/',
-        'Origin': 'https://chaturbate.com',
-    })
+    req = urllib.request.Request(url, headers={**REQUEST_HEADERS, 'Accept': '*/*'})
     try:
         with urllib.request.urlopen(req, timeout=15) as resp:
             raw = resp.read()
@@ -293,22 +179,20 @@ def _fetch_manifest_content(url):
         xbmc.log(f"{ADDON_SHORTNAME}: manifest fetch failed: {repr(e)}", level=xbmc.LOGERROR)
         return None
 
-    content = raw.decode('utf-8', errors='replace')
-    lines = []
-    for line in content.splitlines():
-        s = line.strip()
-        if s and not s.startswith('#') and not s.startswith('http'):
-            lines.append(urljoin(url, s))
-        elif s.startswith('#'):
-            lines.append(re.sub(
-                r'URI="([^"]*)"',
-                lambda m: f'URI="{urljoin(url, m.group(1))}"'
-                          if not m.group(1).startswith('http') else m.group(0),
-                line
-            ))
-        else:
-            lines.append(line)
-    return '\n'.join(lines)
+    def make_absolute(line):
+        # Rewrite quoted URI="..." attributes (EXT-X-MEDIA, EXT-X-MAP, etc.)
+        line = re.sub(
+            r'URI="([^"]*)"',
+            lambda m: f'URI="{urljoin(url, m.group(1))}"' if not m.group(1).startswith('http') else m.group(0),
+            line
+        )
+        # Rewrite bare URI lines (variant/chunklist paths not starting with #)
+        if not line.startswith('#') and line.strip() and not line.startswith('http'):
+            line = urljoin(url, line.strip())
+        return line
+
+    lines = raw.decode('utf-8', errors='replace').splitlines()
+    return '\n'.join(make_absolute(l) for l in lines)
 
 def evaluate_request():
     """Evaluate what has been picked in Kodi"""
@@ -773,33 +657,27 @@ def play_actor(actor, genre=[""]):
     li.setArt({'icon': THUMB_SQUARE.format(actor), 'thumb': THUMB_SQUARE.format(actor), 'poster': THUMB_SQUARE.format(actor)})
     li.setMimeType('application/vnd.apple.mpegurl')
 
-    # LL-HLS source needs special handling to work around CDN token issues, but other sources can be played directly.
+    li.setProperty('inputstream', 'inputstream.adaptive')
+
     if 'llhls' in hls_source:
         content = _fetch_manifest_content(hls_source)
         if content:
-            try:
-                with open(_PROXY_FILE, 'w', encoding='utf-8') as fh:
-                    fh.write(content)
-                xbmc.log(f"{ADDON_SHORTNAME}: manifest pre-fetched - {_PROXY_FILE}", 1)
-            except Exception as e:
-                xbmc.log(f"{ADDON_SHORTNAME}: manifest write failed: {repr(e)}",
-                         level=xbmc.LOGERROR)
-                content = None
-        if content:
-            _stop_proxy_server()
-            proxy_port = _start_proxy_server()
-            if proxy_port:
-                play_url = f'http://127.0.0.1:{proxy_port}/{ADDON_SHORTNAME}.m3u8'
-                li.setProperty('inputstream', 'inputstream.adaptive')
-                xbmc.log(f"{ADDON_SHORTNAME}: LL-HLS via inputstream.adaptive - {play_url}", 1)
+            srv_sock, play_url = _bind_manifest_socket()
+            if srv_sock:
+                li.setPath(play_url)
+                xbmc.log(f"{ADDON_SHORTNAME}: LL-HLS via one-shot server - {play_url}", 1)
+                xbmcplugin.setResolvedUrl(PLUGIN_ID, True, li)
+                xbmc.log(f"{ADDON_SHORTNAME}: setResolvedUrl returned, serving manifest", 1)
+                # Block main thread here — serve the one request then exit.
+                _serve_manifest_once(srv_sock, content)
+                return
             else:
-                play_url = hls_source  # all proxy ports busy, try direct
+                play_url = hls_source  # socket bind failed, try direct
         else:
             play_url = hls_source  # manifest fetch failed, try direct
     else:
-        _stop_proxy_server()
-        li.setProperty('inputstream', 'inputstream.adaptive')
         play_url = hls_source
+        xbmc.log(f"{ADDON_SHORTNAME}: HLS play via inputstream.adaptive - {play_url[:80]}", 1)
 
     li.setPath(play_url)
     xbmcplugin.setResolvedUrl(PLUGIN_ID, True, li)
@@ -1039,12 +917,10 @@ def get_hls_url(actor):
     """
     post_data = urllib.parse.urlencode({'room_slug': actor, 'bandwidth': 'high'}).encode('utf-8')
     headers = {
+        **REQUEST_HEADERS,
         'X-Requested-With': 'XMLHttpRequest',
         'Accept': 'application/json, text/plain, */*',
         'Content-Type': 'application/x-www-form-urlencoded',
-        'Referer': 'https://chaturbate.com/',
-        'Origin': 'https://chaturbate.com',
-        'User-Agent': REQUEST_HEADERS['User-Agent'],
     }
 
     endpoint = HLS_EDGE_ENDPOINT
